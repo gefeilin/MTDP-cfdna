@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 from io import BytesIO
+import importlib
+import sys
+from functools import lru_cache
 
 import matplotlib
 matplotlib.use("Agg")
@@ -9,9 +12,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from shap.plots._waterfall import waterfall_legacy
 
-from .config import TARGET_SPECS
+from .config import CFDNA_ROOT_DIR, TARGET_SPECS
 
 
 def format_target_value(target_key: str, value: float, *, fev1_scaled_fallback: bool = False) -> str:
@@ -260,6 +262,42 @@ def format_month_label(years_value: float) -> str:
     return f"{int(round(float(years_value) * 12))}m"
 
 
+@lru_cache(maxsize=1)
+def _load_notebook_shap_v2():
+    package_parent = str(CFDNA_ROOT_DIR)
+    if package_parent not in sys.path:
+        sys.path.insert(0, package_parent)
+
+    existing = sys.modules.get("shap_v2")
+    existing_file = getattr(existing, "__file__", "") if existing is not None else ""
+    if existing is not None and (not existing_file or not str(existing_file).startswith(package_parent)):
+        for module_name in list(sys.modules):
+            if module_name == "shap_v2" or module_name.startswith("shap_v2."):
+                sys.modules.pop(module_name, None)
+
+    return importlib.import_module("shap_v2")
+
+
+def _notebook_waterfall_target_spec(explanation, plot_shap_series: pd.Series) -> tuple[float, str, tuple[float, float]]:
+    if explanation.target_key in {"mortality_2y", "severe_ACR", "ever_clinical_AMR", "BLAD"}:
+        if explanation.target_key == "mortality_2y":
+            return 100.0, f"Mortality risk {format_month_label(2.0)} (%)", (-30.0, 130.0)
+
+        notebook_label_map = {
+            "severe_ACR": "severe_ACR probability (%)",
+            "ever_clinical_AMR": "ever_clinical_AMR probability (%)",
+            "BLAD": "BLAD probability (%)",
+        }
+        return 100.0, notebook_label_map[explanation.target_key], (-30.0, 130.0)
+
+    pred_value = float(explanation.prediction)
+    base_value = float(explanation.base_value)
+    lower = min(pred_value, base_value, float(plot_shap_series.sum() + base_value))
+    upper = max(pred_value, base_value, float(plot_shap_series.sum() + base_value))
+    pad = max(0.5, 0.2 * (upper - lower + 1e-6))
+    return 1.0, "1-year FEV1 predicted value", (lower - pad, upper + pad)
+
+
 def _waterfall_target_config(explanation, plot_shap_series: pd.Series) -> tuple[float, str, tuple[float, float]]:
     if explanation.target_key in {"mortality_2y", "severe_ACR", "ever_clinical_AMR", "BLAD"}:
         if explanation.target_key == "mortality_2y":
@@ -350,21 +388,26 @@ def build_waterfall_image_data_url(
     feature_values = explanation.feature_values.copy()
     residual_feature_name = "__missing_residual_hidden__"
 
-    if abs(float(explanation.other_baseline_residual)) > 0:
-        shap_series.loc[residual_feature_name] = float(explanation.other_baseline_residual)
-        feature_values.loc[residual_feature_name] = ""
-
     top_feature_count = min(len(shap_series), max(1, int(top_n) - 1))
     top_feature_names = (
         shap_series.abs().sort_values(ascending=False).head(top_feature_count).index.tolist()
     )
+
+    plot_shap_series = shap_series.copy()
+    plot_feature_values = feature_values.copy()
+    if abs(float(explanation.other_baseline_residual)) > 0:
+        plot_shap_series.loc[residual_feature_name] = float(explanation.other_baseline_residual)
+        plot_feature_values.loc[residual_feature_name] = ""
+
     remaining_feature_names = [
-        name for name in shap_series.index.tolist() if name not in top_feature_names
+        name for name in plot_shap_series.index.tolist() if name not in top_feature_names
     ]
     ordered_feature_names = top_feature_names + remaining_feature_names
+    order = np.array(
+        [plot_shap_series.index.get_loc(name) for name in ordered_feature_names],
+        dtype=int,
+    )
 
-    plot_shap_series = shap_series.loc[ordered_feature_names].copy()
-    plot_feature_values = feature_values.loc[ordered_feature_names].copy()
     feature_display_values = pd.Series(
         [
             str(value) if not pd.isna(value) else ""
@@ -376,40 +419,39 @@ def build_waterfall_image_data_url(
     if residual_feature_name in feature_display_values.index:
         feature_display_values.loc[residual_feature_name] = ""
 
-    scale, target_label, xlim = _waterfall_target_config(explanation, plot_shap_series)
-    scaled_values = plot_shap_series.to_numpy(dtype=float) * scale
-    scaled_base = float(explanation.base_value) * scale
-    scaled_prediction = float(explanation.prediction) * scale
+    scale, target_label, xlim = _notebook_waterfall_target_spec(explanation, plot_shap_series)
+    shap_v2 = _load_notebook_shap_v2()
+    shap_explanation = shap_v2.Explanation(
+        values=plot_shap_series.to_numpy(dtype=float) * scale,
+        base_values=float(explanation.base_value) * scale,
+        data=feature_display_values.to_numpy(dtype=object),
+        display_data=feature_display_values.to_numpy(dtype=object),
+        feature_names=plot_shap_series.index.tolist(),
+    )
 
     plt.figure(figsize=figsize)
-    waterfall_legacy(
-        scaled_base,
-        scaled_values,
-        features=feature_display_values.to_numpy(dtype=object),
-        feature_names=plot_shap_series.index.tolist(),
+    custom_predicted_label = (
+        predicted_label
+        if predicted_label is not None
+        else (predicted_prefix if predicted_prefix != "Predicted" else None)
+    )
+    shap_v2.plots.waterfall_v2(
+        shap_explanation,
         max_display=int(top_n),
         show=False,
+        xlim=xlim,
+        order=order,
+        target_label=target_label,
+        average_prefix="Average predicted",
+        predicted_prefix=predicted_prefix,
+        predicted_label=custom_predicted_label,
     )
     figure = plt.gcf()
     figure.set_size_inches(*figsize)
 
-    for axis in figure.axes:
-        axis.set_xlim(*xlim)
-
-    _apply_notebook_style_top_axes(
-        figure,
-        base_value=scaled_base,
-        prediction=scaled_prediction,
-        xlim=xlim,
-        target_label=target_label,
-        average_prefix="Average predicted",
-        predicted_prefix=predicted_prefix,
-        predicted_label=predicted_label,
-    )
-
     plt.tight_layout()
     buffer = BytesIO()
-    plt.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
+    plt.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight")
     plt.close(figure)
     buffer.seek(0)
     return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
