@@ -403,13 +403,12 @@ app.layout = dbc.Container(
                                                     md=6,
                                                 ),
                                                 dbc.Col(
-                                                    dbc.Button(
+                                                    html.A(
                                                         "Download example CSV",
-                                                        id="download-example-button",
-                                                        color="primary",
-                                                        className="w-100",
                                                         href="/download-example.csv",
-                                                        external_link=True,
+                                                        download="cfdna_example_data.csv",
+                                                        className="btn btn-primary w-100",
+                                                        role="button",
                                                     ),
                                                     md=6,
                                                 ),
