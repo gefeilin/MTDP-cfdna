@@ -64,6 +64,22 @@ def _category_sort_key(value: str) -> tuple[int, float | str]:
     return (1, str(value))
 
 
+def _category_label_lookup(feature_name: str) -> tuple[dict[str, str], dict[str, str]]:
+    raw_feature_name = FEATURE_LABEL_REVERSE_MAP.get(feature_name, feature_name)
+    forward: dict[str, str] = {}
+    reverse: dict[str, str] = {}
+
+    for raw_value, label in CATEGORY_VALUE_LABEL_MAP.get(raw_feature_name, {}).items():
+        canonical_value = canonicalize_category_value(raw_value)
+        if canonical_value is None:
+            continue
+        label_text = str(label)
+        forward[canonical_value] = label_text
+        reverse[label_text] = canonical_value
+
+    return forward, reverse
+
+
 def build_schema_artifacts() -> SchemaArtifacts:
     df = load_baseline_frame()
     if not SCHEMA_METADATA_PATH.exists():
@@ -110,21 +126,49 @@ def build_schema_artifacts() -> SchemaArtifacts:
     )
 
 
-def build_category_dropdown_options(schema: SchemaArtifacts) -> dict[str, list[dict[str, str]]]:
-    dropdowns: dict[str, list[dict[str, str]]] = {}
+def category_value_to_editor_label(feature_name: str, value) -> str:
+    if pd.isna(value):
+        return ""
+
+    canonical_value = canonicalize_category_value(value)
+    if canonical_value is None:
+        return ""
+
+    forward, _reverse = _category_label_lookup(feature_name)
+    return forward.get(canonical_value, canonical_value)
+
+
+def editor_label_to_category_value(feature_name: str, value) -> str:
+    if pd.isna(value) or value == "":
+        return ""
+
+    forward, reverse = _category_label_lookup(feature_name)
+    value_text = str(value)
+    if value_text in reverse:
+        return reverse[value_text]
+
+    canonical_value = canonicalize_category_value(value_text)
+    if canonical_value is None:
+        return ""
+    if canonical_value in forward:
+        return canonical_value
+    return canonical_value
+
+
+def build_category_dropdown_options(schema: SchemaArtifacts) -> dict[str, dict[str, object]]:
+    dropdowns: dict[str, dict[str, object]] = {}
     category_columns = schema.passthrough_category_columns + schema.embedding_category_columns
 
     for column in category_columns:
         options: list[dict[str, str]] = [{"label": "(empty)", "value": ""}]
-        seen_values = {""}
+        seen_labels = {""}
+        forward, _reverse = _category_label_lookup(column)
 
-        value_map = CATEGORY_VALUE_LABEL_MAP.get(column, {})
-        for raw_value, label in value_map.items():
-            canonical_value = canonicalize_category_value(raw_value)
-            if canonical_value is None or canonical_value in seen_values:
+        for canonical_value, label_text in forward.items():
+            if label_text in seen_labels:
                 continue
-            options.append({"label": str(label), "value": canonical_value})
-            seen_values.add(canonical_value)
+            options.append({"label": label_text, "value": label_text})
+            seen_labels.add(label_text)
 
         observed_values: set[str] = set()
         if column in schema.embedding_codebooks:
@@ -136,12 +180,13 @@ def build_category_dropdown_options(schema: SchemaArtifacts) -> dict[str, list[d
             )
 
         for canonical_value in sorted(observed_values, key=_category_sort_key):
-            if canonical_value in seen_values:
+            label_text = forward.get(canonical_value, canonical_value)
+            if label_text in seen_labels:
                 continue
-            options.append({"label": str(canonical_value), "value": canonical_value})
-            seen_values.add(canonical_value)
+            options.append({"label": label_text, "value": label_text})
+            seen_labels.add(label_text)
 
-        dropdowns[column] = options
+        dropdowns[column] = {"options": options, "clearable": True}
 
     return dropdowns
 
@@ -153,12 +198,26 @@ def normalize_editor_record(record: dict, schema: SchemaArtifacts) -> dict:
     for feature_name in schema.feature_names:
         value = record.get(feature_name)
         if feature_name in category_columns:
-            canonical_value = canonicalize_category_value(value)
-            normalized[feature_name] = "" if canonical_value is None else canonical_value
+            normalized[feature_name] = category_value_to_editor_label(feature_name, value)
         else:
             normalized[feature_name] = "" if pd.isna(value) else value
 
     return normalized
+
+
+def coerce_editor_record_for_model(record: dict, schema: SchemaArtifacts) -> dict:
+    coerced: dict = {}
+    category_columns = set(schema.passthrough_category_columns + schema.embedding_category_columns)
+
+    for feature_name in schema.feature_names:
+        value = record.get(feature_name)
+        if feature_name in category_columns:
+            canonical_value = editor_label_to_category_value(feature_name, value)
+            coerced[feature_name] = np.nan if canonical_value == "" else canonical_value
+        else:
+            coerced[feature_name] = np.nan if value == "" else value
+
+    return coerced
 
 
 def map_categorical_value_for_display(feature_name: str, value) -> str | float | int:

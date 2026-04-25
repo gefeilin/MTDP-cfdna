@@ -12,11 +12,17 @@ from utils.config import FEATURE_LABEL_MAP, MC_SAMPLES_DEFAULT, TARGET_SPECS
 from utils.metadata import (
     build_category_dropdown_options,
     build_schema_artifacts,
+    coerce_editor_record_for_model,
     load_baseline_frame,
     normalize_editor_record,
 )
 from utils.modeling import get_prediction_service
-from utils.plots import build_fev1_figure, build_survival_figure, build_waterfall_figure, format_target_value
+from utils.plots import (
+    build_fev1_figure,
+    build_survival_figure,
+    build_waterfall_image_data_url,
+    format_target_value,
+)
 from utils.shap_utils import compute_individual_explanation
 
 
@@ -412,7 +418,7 @@ app.layout = dbc.Container(
                                             className="mt-3 mb-3",
                                         ),
                                         html.Div(id="shap-status", className="mb-2"),
-                                        dcc.Graph(id="shap-graph", config={"displayModeBar": False}),
+                                        html.Div(id="shap-graph"),
                                     ]
                                 )
                             ],
@@ -646,7 +652,11 @@ def render_editor(store, selected_row):
 def apply_edits(_n_clicks, table_data, selected_row):
     if not table_data or not selected_row:
         return no_update
-    return {"row_index": int(selected_row["row_index"]), "record": table_data[0]}
+    schema = build_schema_artifacts()
+    return {
+        "row_index": int(selected_row["row_index"]),
+        "record": coerce_editor_record_for_model(table_data[0], schema),
+    }
 
 
 def _build_detail_context(store: dict, selected_row: dict, edited_row: dict | None):
@@ -733,7 +743,7 @@ def render_patient_details(store, selected_row, edited_row):
 
 @app.callback(
     Output("shap-status", "children"),
-    Output("shap-graph", "figure"),
+    Output("shap-graph", "children"),
     Input("render-shap-button", "n_clicks"),
     State("shap-target-dropdown", "value"),
     State("force-dynamic-shap", "value"),
@@ -764,9 +774,18 @@ def render_shap(_n_clicks, target_key, force_flags, store, selected_row, edited_
             + ("from saved cache." if explanation.from_cache else "with dynamic Kernel SHAP."),
             color="success" if explanation.from_cache else "secondary",
         )
-        return status, build_waterfall_figure(explanation)
+        return status, html.Img(
+            src=build_waterfall_image_data_url(explanation, top_n=8),
+            style={
+                "width": "100%",
+                "height": "auto",
+                "display": "block",
+                "backgroundColor": "white",
+                "borderRadius": "10px",
+            },
+        )
     except Exception as exc:
-        return dbc.Alert(str(exc), color="danger"), {}
+        return dbc.Alert(str(exc), color="danger"), html.Div()
 
 
 if __name__ == "__main__":

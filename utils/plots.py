@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import base64
+from io import BytesIO
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
+from shap.plots._waterfall import waterfall_legacy
 
 from .config import TARGET_SPECS
 
@@ -248,64 +256,160 @@ def build_fev1_figure(original: dict, updated: dict | None = None) -> go.Figure:
     return fig
 
 
-def build_waterfall_figure(explanation, *, top_n: int = 8) -> go.Figure:
+def format_month_label(years_value: float) -> str:
+    return f"{int(round(float(years_value) * 12))}m"
+
+
+def _waterfall_target_config(explanation, plot_shap_series: pd.Series) -> tuple[float, str, tuple[float, float]]:
+    if explanation.target_key in {"mortality_2y", "severe_ACR", "ever_clinical_AMR", "BLAD"}:
+        if explanation.target_key == "mortality_2y":
+            target_label = f"Mortality risk {format_month_label(2.0)} (%)"
+        else:
+            target_label = f"{TARGET_SPECS[explanation.target_key]['label']} (%)"
+        return 100.0, target_label, (-30.0, 130.0)
+
+    pred_value = float(explanation.prediction)
+    base_value = float(explanation.base_value)
+    lower = min(pred_value, base_value, float(plot_shap_series.sum() + base_value))
+    upper = max(pred_value, base_value, float(plot_shap_series.sum() + base_value))
+    pad = max(0.5, 0.2 * (upper - lower + 1e-6))
+    return 1.0, explanation.unit_label or TARGET_SPECS[explanation.target_key]["label"], (lower - pad, upper + pad)
+
+
+def _apply_notebook_style_top_axes(
+    figure,
+    *,
+    base_value: float,
+    prediction: float,
+    xlim: tuple[float, float],
+    target_label: str,
+    average_prefix: str,
+    predicted_prefix: str,
+    predicted_label: str | None,
+) -> None:
+    if len(figure.axes) < 3:
+        return
+
+    xmin, xmax = xlim
+    fig = figure
+    avg_axis = figure.axes[1]
+    pred_axis = figure.axes[2]
+
+    avg_axis.set_xlim(xmin, xmax)
+    avg_axis.set_xticks([base_value, base_value + min(1e-8, max(abs(xmax), 1.0) * 1e-10)])
+    avg_axis.set_xticklabels(
+        [f"\n{average_prefix}\n{target_label}", f"\n= {base_value:0.03f}"],
+        fontsize=12,
+        ha="left",
+    )
+
+    pred_axis.set_xlim(xmin, xmax)
+    pred_axis.set_xticks([prediction, prediction + min(1e-8, max(abs(xmax), 1.0) * 1e-10)])
+    pred_header = predicted_label if predicted_label is not None else f"{predicted_prefix}\n{target_label}"
+    pred_axis.set_xticklabels(
+        [pred_header, f"= {prediction:0.03f}"],
+        fontsize=12,
+        ha="left",
+    )
+
+    tick_labels = pred_axis.xaxis.get_majorticklabels()
+    if len(tick_labels) >= 2:
+        tick_labels[0].set_transform(
+            tick_labels[0].get_transform()
+            + matplotlib.transforms.ScaledTranslation(-10 / 72.0, 0, fig.dpi_scale_trans)
+        )
+        tick_labels[1].set_transform(
+            tick_labels[1].get_transform()
+            + matplotlib.transforms.ScaledTranslation(12 / 72.0, 0, fig.dpi_scale_trans)
+        )
+        tick_labels[1].set_color("#777777")
+
+    avg_tick_labels = avg_axis.xaxis.get_majorticklabels()
+    if len(avg_tick_labels) >= 2:
+        avg_tick_labels[0].set_transform(
+            avg_tick_labels[0].get_transform()
+            + matplotlib.transforms.ScaledTranslation(-20 / 72.0, 0, fig.dpi_scale_trans)
+        )
+        avg_tick_labels[1].set_transform(
+            avg_tick_labels[1].get_transform()
+            + matplotlib.transforms.ScaledTranslation(22 / 72.0, -1 / 72.0, fig.dpi_scale_trans)
+        )
+        avg_tick_labels[1].set_color("#777777")
+
+
+def build_waterfall_image_data_url(
+    explanation,
+    *,
+    top_n: int = 8,
+    figsize: tuple[float, float] = (10.2, 3.25),
+    dpi: int = 220,
+    predicted_prefix: str = "Predicted",
+    predicted_label: str | None = None,
+) -> str:
     shap_series = explanation.shap_series.copy()
-    if abs(explanation.other_baseline_residual) > 1e-8:
-        shap_series.loc["Other baseline residual"] = explanation.other_baseline_residual
+    feature_values = explanation.feature_values.copy()
+    residual_feature_name = "__missing_residual_hidden__"
+
+    if abs(float(explanation.other_baseline_residual)) > 0:
+        shap_series.loc[residual_feature_name] = float(explanation.other_baseline_residual)
+        feature_values.loc[residual_feature_name] = ""
 
     top_feature_count = min(len(shap_series), max(1, int(top_n) - 1))
-    selected = shap_series.abs().sort_values(ascending=False).head(top_feature_count)
-    plot_series = shap_series.loc[selected.index].copy()
-    remainder = shap_series.drop(plot_series.index, errors="ignore")
-    if not remainder.empty:
-        plot_series.loc["All other features"] = float(remainder.sum())
-
-    plot_series = plot_series.sort_values()
-    labels = []
-    for feature_name in plot_series.index:
-        feature_value = explanation.feature_values.get(feature_name, "")
-        if feature_name in {"All other features", "Other baseline residual"}:
-            labels.append(feature_name)
-        else:
-            labels.append(f"{feature_name} = {feature_value}")
-
-    scale = 100.0 if explanation.target_key != "fev1_1y" else 1.0
-    baseline = float(explanation.base_value) * scale
-    deltas = plot_series.to_numpy(dtype=float) * scale
-    prediction = float(explanation.prediction) * scale
-
-    if explanation.target_key == "fev1_1y":
-        unit_label = explanation.unit_label
-    else:
-        unit_label = TARGET_SPECS[explanation.target_key]["unit"]
-
-    fig = go.Figure(
-        go.Waterfall(
-            orientation="h",
-            measure=["absolute"] + ["relative"] * len(deltas) + ["total"],
-            y=["Baseline"] + labels + ["Prediction"],
-            x=[baseline] + deltas.tolist() + [0.0],
-            connector={"line": {"color": "rgba(80,80,80,0.35)"}},
-            decreasing={"marker": {"color": "#c62828"}},
-            increasing={"marker": {"color": "#2e7d32"}},
-            totals={"marker": {"color": "#1565c0"}},
-        )
+    top_feature_names = (
+        shap_series.abs().sort_values(ascending=False).head(top_feature_count).index.tolist()
     )
-    fig.update_layout(
-        **_shared_layout(
-            f"SHAP waterfall: {TARGET_SPECS[explanation.target_key]['label']}",
-            height=520,
-        ),
-        xaxis_title=unit_label,
-        yaxis_title="",
+    remaining_feature_names = [
+        name for name in shap_series.index.tolist() if name not in top_feature_names
+    ]
+    ordered_feature_names = top_feature_names + remaining_feature_names
+
+    plot_shap_series = shap_series.loc[ordered_feature_names].copy()
+    plot_feature_values = feature_values.loc[ordered_feature_names].copy()
+    feature_display_values = pd.Series(
+        [
+            str(value) if not pd.isna(value) else ""
+            for value in plot_feature_values.tolist()
+        ],
+        index=plot_feature_values.index,
+        dtype=object,
     )
-    fig.add_annotation(
-        x=prediction,
-        y=-0.14,
-        yref="paper",
-        text=f"Prediction = {prediction:.2f}{'' if explanation.target_key == 'fev1_1y' else '%'}",
-        showarrow=False,
-        font=dict(size=12, color="#1565c0"),
+    if residual_feature_name in feature_display_values.index:
+        feature_display_values.loc[residual_feature_name] = ""
+
+    scale, target_label, xlim = _waterfall_target_config(explanation, plot_shap_series)
+    scaled_values = plot_shap_series.to_numpy(dtype=float) * scale
+    scaled_base = float(explanation.base_value) * scale
+    scaled_prediction = float(explanation.prediction) * scale
+
+    plt.figure(figsize=figsize)
+    waterfall_legacy(
+        scaled_base,
+        scaled_values,
+        features=feature_display_values.to_numpy(dtype=object),
+        feature_names=plot_shap_series.index.tolist(),
+        max_display=int(top_n),
+        show=False,
     )
-    fig.update_yaxes(automargin=True)
-    return fig
+    figure = plt.gcf()
+    figure.set_size_inches(*figsize)
+
+    for axis in figure.axes:
+        axis.set_xlim(*xlim)
+
+    _apply_notebook_style_top_axes(
+        figure,
+        base_value=scaled_base,
+        prediction=scaled_prediction,
+        xlim=xlim,
+        target_label=target_label,
+        average_prefix="Average predicted",
+        predicted_prefix=predicted_prefix,
+        predicted_label=predicted_label,
+    )
+
+    plt.tight_layout()
+    buffer = BytesIO()
+    plt.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
+    plt.close(figure)
+    buffer.seek(0)
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
