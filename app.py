@@ -24,6 +24,7 @@ from utils.modeling import get_prediction_service
 from utils.plots import (
     build_fev1_figure,
     build_survival_figure,
+    build_waterfall_image_data_url,
     build_waterfall_png_bytes,
     format_target_value,
 )
@@ -830,18 +831,29 @@ def render_shap(_n_clicks, target_key, force_flags, store, selected_row, edited_
             f"SHAP rendered for {TARGET_SPECS[target_key]['label']} " + source_text,
             color="success" if explanation.source in {"saved_cache", "saved_explainer"} else "secondary",
         )
-        png_token = _store_shap_image(
-            build_waterfall_png_bytes(explanation, top_n=8)
-        )
-        return status, html.Img(
-            src=f"/shap-image/{png_token}.png",
-            style={
-                "width": "100%",
-                "height": "auto",
-                "display": "block",
-                "backgroundColor": "white",
-                "borderRadius": "10px",
-            },
+        png_bytes = build_waterfall_png_bytes(explanation, top_n=8)
+        png_token = _store_shap_image(png_bytes)
+        return status, html.Div(
+            [
+                html.Img(
+                    src=build_waterfall_image_data_url(explanation, top_n=8),
+                    style={
+                        "width": "100%",
+                        "height": "auto",
+                        "display": "block",
+                        "backgroundColor": "white",
+                        "borderRadius": "10px",
+                    },
+                ),
+                html.Div(
+                    html.A(
+                        "Open SHAP image directly",
+                        href=f"/shap-image/{png_token}.png",
+                        target="_blank",
+                    ),
+                    style={"marginTop": "8px"},
+                ),
+            ]
         )
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger"), html.Div()
