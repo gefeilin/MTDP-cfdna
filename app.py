@@ -24,7 +24,6 @@ from utils.modeling import get_prediction_service
 from utils.plots import (
     build_fev1_figure,
     build_survival_figure,
-    build_waterfall_image_data_url,
     build_waterfall_png_bytes,
     format_target_value,
 )
@@ -833,10 +832,11 @@ def render_shap(_n_clicks, target_key, force_flags, store, selected_row, edited_
         )
         png_bytes = build_waterfall_png_bytes(explanation, top_n=8)
         png_token = _store_shap_image(png_bytes)
+        png_src = f"/shap-image/{png_token}.png"
         return status, html.Div(
             [
                 html.Img(
-                    src=build_waterfall_image_data_url(explanation, top_n=8),
+                    src=png_src,
                     style={
                         "width": "100%",
                         "height": "auto",
@@ -848,7 +848,7 @@ def render_shap(_n_clicks, target_key, force_flags, store, selected_row, edited_
                 html.Div(
                     html.A(
                         "Open SHAP image directly",
-                        href=f"/shap-image/{png_token}.png",
+                        href=png_src,
                         target="_blank",
                     ),
                     style={"marginTop": "8px"},
