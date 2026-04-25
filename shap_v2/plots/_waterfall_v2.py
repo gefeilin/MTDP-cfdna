@@ -358,7 +358,10 @@ def waterfall_v2(
 
     if xlim is not None:
         ax.set_xlim(xlim)
-        xticks = np.linspace(0, 100, 6)
+        if np.isclose(xlim[0], -30.0) and np.isclose(xlim[1], 130.0):
+            xticks = np.linspace(0, 100, 6)
+        else:
+            xticks = np.linspace(xlim[0], xlim[1], 6)
         ax.set_xticks(xticks)
     if show:
         plt.show()
