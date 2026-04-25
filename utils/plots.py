@@ -384,6 +384,26 @@ def build_waterfall_image_data_url(
     predicted_prefix: str = "Predicted",
     predicted_label: str | None = None,
 ) -> str:
+    png_bytes = build_waterfall_png_bytes(
+        explanation,
+        top_n=top_n,
+        figsize=figsize,
+        dpi=dpi,
+        predicted_prefix=predicted_prefix,
+        predicted_label=predicted_label,
+    )
+    return "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+
+
+def build_waterfall_png_bytes(
+    explanation,
+    *,
+    top_n: int = 8,
+    figsize: tuple[float, float] = (10.2, 3.25),
+    dpi: int = 220,
+    predicted_prefix: str = "Predicted",
+    predicted_label: str | None = None,
+) -> bytes:
     shap_series = explanation.shap_series.copy()
     feature_values = explanation.feature_values.copy()
     residual_feature_name = "__missing_residual_hidden__"
@@ -454,4 +474,4 @@ def build_waterfall_image_data_url(
     plt.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight")
     plt.close(figure)
     buffer.seek(0)
-    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    return buffer.getvalue()

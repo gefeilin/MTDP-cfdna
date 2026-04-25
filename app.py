@@ -3,10 +3,14 @@ from __future__ import annotations
 import base64
 import io
 import os
+import uuid
+from collections import OrderedDict
+
 import dash
 import dash_bootstrap_components as dbc
 import pandas as pd
 from dash import ALL, Input, Output, State, dcc, html, dash_table, no_update
+from flask import Response
 
 from utils.config import FEATURE_LABEL_MAP, MC_SAMPLES_DEFAULT, TARGET_SPECS
 from utils.metadata import (
@@ -20,7 +24,7 @@ from utils.modeling import get_prediction_service
 from utils.plots import (
     build_fev1_figure,
     build_survival_figure,
-    build_waterfall_image_data_url,
+    build_waterfall_png_bytes,
     format_target_value,
 )
 from utils.shap_utils import compute_individual_explanation
@@ -32,6 +36,25 @@ app = dash.Dash(
     suppress_callback_exceptions=True,
 )
 app.title = "cfDNA Multitask DeepHit"
+
+_SHAP_IMAGE_CACHE: OrderedDict[str, bytes] = OrderedDict()
+_MAX_SHAP_IMAGE_CACHE_ITEMS = 32
+
+
+def _store_shap_image(png_bytes: bytes) -> str:
+    token = uuid.uuid4().hex
+    _SHAP_IMAGE_CACHE[token] = png_bytes
+    while len(_SHAP_IMAGE_CACHE) > _MAX_SHAP_IMAGE_CACHE_ITEMS:
+        _SHAP_IMAGE_CACHE.popitem(last=False)
+    return token
+
+
+@app.server.route("/shap-image/<token>.png")
+def serve_shap_image(token: str):
+    png_bytes = _SHAP_IMAGE_CACHE.get(token)
+    if png_bytes is None:
+        return Response(status=404)
+    return Response(png_bytes, mimetype="image/png")
 
 app.index_string = """
 <!DOCTYPE html>
@@ -807,8 +830,11 @@ def render_shap(_n_clicks, target_key, force_flags, store, selected_row, edited_
             f"SHAP rendered for {TARGET_SPECS[target_key]['label']} " + source_text,
             color="success" if explanation.source in {"saved_cache", "saved_explainer"} else "secondary",
         )
+        png_token = _store_shap_image(
+            build_waterfall_png_bytes(explanation, top_n=8)
+        )
         return status, html.Img(
-            src=build_waterfall_image_data_url(explanation, top_n=8),
+            src=f"/shap-image/{png_token}.png",
             style={
                 "width": "100%",
                 "height": "auto",
