@@ -57,6 +57,10 @@ class PreparedBatch:
     warnings: list[str]
 
 
+def _format_horizon_suffix(years: float) -> str:
+    return f"{float(years):.2f}".rstrip("0").rstrip(".")
+
+
 @lru_cache(maxsize=1)
 def _load_model_metadata() -> dict[str, Any]:
     if not MODEL_METADATA_PATH.exists():
@@ -559,16 +563,24 @@ class CfDNAPredictionService:
 
     def predict_summary(self, batch: PreparedBatch) -> pd.DataFrame:
         predictions = self._predict_arrays(batch.x, batch.mask, samples=1, stochastic=False)
-        return pd.DataFrame(
-            {
-                "subject_number": batch.subject_numbers,
-                "mortality_2y": predictions["mortality_2y"][0],
-                "fev1_1y": predictions["fev1_1y"][0],
-                "severe_ACR": predictions["severe_ACR"][0],
-                "ever_clinical_AMR": predictions["ever_clinical_AMR"][0],
-                "BLAD": predictions["BLAD"][0],
-            }
-        )
+        summary = {
+            "subject_number": batch.subject_numbers,
+            "mortality_2y": predictions["mortality_2y"][0],
+            "fev1_1y": predictions["fev1_1y"][0],
+            "severe_ACR": predictions["severe_ACR"][0],
+            "ever_clinical_AMR": predictions["ever_clinical_AMR"][0],
+            "BLAD": predictions["BLAD"][0],
+        }
+
+        cumulative_risk = predictions["cumulative_risk"][0]
+        for horizon_index, horizon_years in enumerate(
+            self.time_bin_edges_years[: cumulative_risk.shape[1]]
+        ):
+            summary[f"mortality_risk_{_format_horizon_suffix(horizon_years)}y"] = cumulative_risk[
+                :, horizon_index
+            ]
+
+        return pd.DataFrame(summary)
 
     def predict_single(
         self,
@@ -615,6 +627,7 @@ class CfDNAPredictionService:
                 "ever_clinical_AMR",
                 "BLAD",
             ]:
+                result[f"{target_name}_mc_mean"] = float(draws[target_name][:, 0].mean())
                 result[f"{target_name}_lower"] = float(
                     np.quantile(draws[target_name][:, 0], lower_q)
                 )
@@ -622,12 +635,14 @@ class CfDNAPredictionService:
                     np.quantile(draws[target_name][:, 0], upper_q)
                 )
 
+            result["survival_curve_mc_mean"] = draws["cumulative_risk"][:, 0, :].mean(axis=0)
             result["survival_curve_lower"] = np.quantile(
                 draws["cumulative_risk"][:, 0, :], lower_q, axis=0
             )
             result["survival_curve_upper"] = np.quantile(
                 draws["cumulative_risk"][:, 0, :], upper_q, axis=0
             )
+            result["fev1_curve_mc_mean"] = draws["fev1_curve"][:, 0, :].mean(axis=0)
             result["fev1_curve_lower"] = np.quantile(
                 draws["fev1_curve"][:, 0, :], lower_q, axis=0
             )

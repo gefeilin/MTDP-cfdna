@@ -9,7 +9,12 @@ import pandas as pd
 from dash import Input, Output, State, dcc, html, dash_table, no_update
 
 from utils.config import FEATURE_LABEL_MAP, MC_SAMPLES_DEFAULT, TARGET_SPECS
-from utils.metadata import build_schema_artifacts, load_baseline_frame
+from utils.metadata import (
+    build_category_dropdown_options,
+    build_schema_artifacts,
+    load_baseline_frame,
+    normalize_editor_record,
+)
 from utils.modeling import get_prediction_service
 from utils.plots import build_fev1_figure, build_survival_figure, build_waterfall_figure, format_target_value
 from utils.shap_utils import compute_individual_explanation
@@ -183,12 +188,56 @@ def metric_card(title: str, target_key: str, detail: dict, updated: dict | None 
     )
 
 
+def _parse_mortality_horizon_years(column_name: str) -> float:
+    return float(column_name.removeprefix("mortality_risk_").removesuffix("y"))
+
+
+def _format_year_label(years: float) -> str:
+    return f"{float(years):.2f}".rstrip("0").rstrip(".")
+
+
+def build_prediction_frames(prediction_records: list[dict]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    raw_df = pd.DataFrame(prediction_records).copy()
+    if raw_df.empty:
+        return raw_df, raw_df
+
+    display_df = pd.DataFrame({"Subject": raw_df["subject_number"].astype(str)})
+    download_df = pd.DataFrame({"Subject": raw_df["subject_number"].astype(str)})
+
+    mortality_columns = sorted(
+        [column for column in raw_df.columns if column.startswith("mortality_risk_")],
+        key=_parse_mortality_horizon_years,
+    )
+    for column in mortality_columns:
+        year_label = _format_year_label(_parse_mortality_horizon_years(column))
+        display_name = f"Mortality @ {year_label}y (%)"
+        values_pct = 100.0 * raw_df[column].astype(float)
+        display_df[display_name] = values_pct.map(lambda value: f"{value:.2f}")
+        download_df[display_name] = values_pct
+
+    display_df["1-year FEV1"] = raw_df["fev1_1y"].astype(float).map(lambda value: f"{value:.2f}")
+    download_df["1-year FEV1"] = raw_df["fev1_1y"].astype(float)
+
+    outcome_columns = [
+        ("severe_ACR", "Severe ACR (%)"),
+        ("ever_clinical_AMR", "Clinical AMR (%)"),
+        ("BLAD", "BLAD (%)"),
+    ]
+    for raw_column, display_name in outcome_columns:
+        values_pct = 100.0 * raw_df[raw_column].astype(float)
+        display_df[display_name] = values_pct.map(lambda value: f"{value:.2f}")
+        download_df[display_name] = values_pct
+
+    return display_df, download_df
+
+
 app.layout = dbc.Container(
     fluid=True,
     children=[
         dcc.Store(id="uploaded-data-store"),
         dcc.Store(id="selected-row-store"),
         dcc.Store(id="edited-row-store"),
+        dcc.Download(id="download-prediction-table"),
         html.Div(
             className="hero",
             children=[
@@ -283,7 +332,20 @@ app.layout = dbc.Container(
                                         html.Div(
                                             [
                                                 html.Span("Prediction table", className="section-title"),
-                                                html.Span("Select one row", className="table-chip"),
+                                                html.Div(
+                                                    [
+                                                        html.Span("Select one row", className="table-chip"),
+                                                        dbc.Button(
+                                                            "Download full table",
+                                                            id="download-prediction-table-button",
+                                                            color="outline-primary",
+                                                            size="sm",
+                                                            disabled=True,
+                                                            className="ms-2",
+                                                        ),
+                                                    ],
+                                                    style={"display": "flex", "alignItems": "center"},
+                                                ),
                                             ],
                                             style={"display": "flex", "justifyContent": "space-between", "alignItems": "center"},
                                         ),
@@ -432,6 +494,8 @@ def download_example(_n_clicks):
 @app.callback(
     Output("uploaded-data-store", "data"),
     Output("upload-status", "children"),
+    Output("selected-row-store", "data"),
+    Output("edited-row-store", "data"),
     Input("upload-data", "contents"),
     Input("load-example-button", "n_clicks"),
     State("upload-data", "filename"),
@@ -444,13 +508,42 @@ def handle_upload(contents, _load_example_clicks, filename):
 
     try:
         if trigger == "load-example-button":
-            return build_loaded_store(load_example_dataframe(), "Bundled example data")
+            store, pieces = build_loaded_store(load_example_dataframe(), "Bundled example data")
+            return store, pieces, {"row_index": 0}, None
         if contents is None:
-            return no_update, dbc.Alert("Upload a CSV to begin.", color="light")
+            return no_update, dbc.Alert("Upload a CSV to begin.", color="light"), no_update, no_update
         df = parse_uploaded_csv(contents)
-        return build_loaded_store(df, filename or "CSV")
+        store, pieces = build_loaded_store(df, filename or "CSV")
+        return store, pieces, {"row_index": 0}, None
     except Exception as exc:
-        return no_update, dbc.Alert(str(exc), color="danger")
+        return no_update, dbc.Alert(str(exc), color="danger"), no_update, no_update
+
+
+@app.callback(
+    Output("download-prediction-table-button", "disabled"),
+    Input("uploaded-data-store", "data"),
+)
+def toggle_prediction_download_button(store):
+    return not bool(store and store.get("predictions"))
+
+
+@app.callback(
+    Output("download-prediction-table", "data"),
+    Input("download-prediction-table-button", "n_clicks"),
+    State("uploaded-data-store", "data"),
+    prevent_initial_call=True,
+)
+def download_prediction_table(_n_clicks, store):
+    if not store or not store.get("predictions"):
+        raise dash.exceptions.PreventUpdate
+
+    _display_df, download_df = build_prediction_frames(store["predictions"])
+    return dcc.send_data_frame(
+        download_df.to_csv,
+        "cfdna_multitask_prediction_table.csv",
+        index=False,
+        float_format="%.6f",
+    )
 
 
 @app.callback(
@@ -465,16 +558,7 @@ def render_prediction_table(store):
     if df.empty:
         return dbc.Alert("No rows were available for prediction.", color="warning")
 
-    display_df = pd.DataFrame(
-        {
-            "Subject": df["subject_number"],
-            "2y mortality": (100.0 * df["mortality_2y"]).map(lambda value: f"{value:.1f}%"),
-            "1y FEV1": df["fev1_1y"].map(lambda value: f"{value:.2f}"),
-            "Severe ACR": (100.0 * df["severe_ACR"]).map(lambda value: f"{value:.1f}%"),
-            "Clinical AMR": (100.0 * df["ever_clinical_AMR"]).map(lambda value: f"{value:.1f}%"),
-            "BLAD": (100.0 * df["BLAD"]).map(lambda value: f"{value:.1f}%"),
-        }
-    )
+    display_df, _download_df = build_prediction_frames(store["predictions"])
 
     return dash_table.DataTable(
         id="prediction-table",
@@ -482,8 +566,8 @@ def render_prediction_table(store):
         columns=[{"name": col, "id": col} for col in display_df.columns],
         row_selectable="single",
         selected_rows=[0] if len(display_df) else [],
-        style_table={"overflowX": "auto"},
-        style_cell={"padding": "10px", "fontSize": "0.88rem", "textAlign": "left"},
+        style_table={"overflowX": "auto", "maxHeight": "460px"},
+        style_cell={"padding": "10px", "fontSize": "0.88rem", "textAlign": "left", "minWidth": "120px"},
         style_header={
             "backgroundColor": "#102a43",
             "color": "white",
@@ -520,13 +604,18 @@ def render_editor(store, selected_row):
     if row_index >= len(raw_records):
         return dbc.Alert("Selected row is out of range.", color="danger")
 
-    row_df = pd.DataFrame([raw_records[row_index]])
     schema = build_schema_artifacts()
+    category_columns = set(
+        schema.passthrough_category_columns + schema.embedding_category_columns
+    )
+    dropdown_options = build_category_dropdown_options(schema)
+    row_df = pd.DataFrame([normalize_editor_record(raw_records[row_index], schema)])
     columns = [
         {
             "name": FEATURE_LABEL_MAP.get(feature_name, feature_name),
             "id": feature_name,
             "editable": True,
+            **({"presentation": "dropdown"} if feature_name in category_columns else {}),
         }
         for feature_name in schema.feature_names
     ]
@@ -536,6 +625,7 @@ def render_editor(store, selected_row):
         data=row_df.to_dict("records"),
         columns=columns,
         editable=True,
+        dropdown=dropdown_options,
         style_table={"overflowX": "auto"},
         style_cell={"minWidth": "180px", "maxWidth": "240px", "whiteSpace": "normal", "padding": "8px"},
         style_header={

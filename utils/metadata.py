@@ -57,6 +57,13 @@ class SchemaArtifacts:
     subject_to_index: dict[str, int]
 
 
+def _category_sort_key(value: str) -> tuple[int, float | str]:
+    numeric_value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.notna(numeric_value):
+        return (0, float(numeric_value))
+    return (1, str(value))
+
+
 def build_schema_artifacts() -> SchemaArtifacts:
     df = load_baseline_frame()
     if not SCHEMA_METADATA_PATH.exists():
@@ -101,6 +108,57 @@ def build_schema_artifacts() -> SchemaArtifacts:
         embedding_codebooks=embedding_codebooks,
         subject_to_index=subject_to_index,
     )
+
+
+def build_category_dropdown_options(schema: SchemaArtifacts) -> dict[str, list[dict[str, str]]]:
+    dropdowns: dict[str, list[dict[str, str]]] = {}
+    category_columns = schema.passthrough_category_columns + schema.embedding_category_columns
+
+    for column in category_columns:
+        options: list[dict[str, str]] = [{"label": "(empty)", "value": ""}]
+        seen_values = {""}
+
+        value_map = CATEGORY_VALUE_LABEL_MAP.get(column, {})
+        for raw_value, label in value_map.items():
+            canonical_value = canonicalize_category_value(raw_value)
+            if canonical_value is None or canonical_value in seen_values:
+                continue
+            options.append({"label": str(label), "value": canonical_value})
+            seen_values.add(canonical_value)
+
+        observed_values: set[str] = set()
+        if column in schema.embedding_codebooks:
+            observed_values.update(str(key) for key in schema.embedding_codebooks[column].keys())
+        if column in schema.cohort_df.columns:
+            observed_values.update(
+                canonical_value
+                for canonical_value in schema.cohort_df[column].map(canonicalize_category_value).dropna().tolist()
+            )
+
+        for canonical_value in sorted(observed_values, key=_category_sort_key):
+            if canonical_value in seen_values:
+                continue
+            options.append({"label": str(canonical_value), "value": canonical_value})
+            seen_values.add(canonical_value)
+
+        dropdowns[column] = options
+
+    return dropdowns
+
+
+def normalize_editor_record(record: dict, schema: SchemaArtifacts) -> dict:
+    normalized: dict = {}
+    category_columns = set(schema.passthrough_category_columns + schema.embedding_category_columns)
+
+    for feature_name in schema.feature_names:
+        value = record.get(feature_name)
+        if feature_name in category_columns:
+            canonical_value = canonicalize_category_value(value)
+            normalized[feature_name] = "" if canonical_value is None else canonical_value
+        else:
+            normalized[feature_name] = "" if pd.isna(value) else value
+
+    return normalized
 
 
 def map_categorical_value_for_display(feature_name: str, value) -> str | float | int:

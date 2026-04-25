@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -167,6 +168,18 @@ def _make_cache_path(target_key: str, patient_index: int) -> Path:
     return SHAP_CACHE_DIR / f"individual_{target_key}_patient{patient_index}_bg64_ns500.pkl"
 
 
+def _install_pickle_compat_aliases() -> None:
+    sys.modules.setdefault("numpy._core", np.core)
+    sys.modules.setdefault("numpy._core.numeric", np.core.numeric)
+    if hasattr(np.core, "multiarray"):
+        sys.modules.setdefault("numpy._core.multiarray", np.core.multiarray)
+
+
+def _read_pickle_compat(path: Path):
+    _install_pickle_compat_aliases()
+    return pd.read_pickle(path)
+
+
 def _feature_value_series_for_display(detail: dict) -> pd.Series:
     raw_row = detail["raw_features"].iloc[0]
     return pd.Series(
@@ -192,7 +205,10 @@ def _maybe_load_cached_explanation(service, target_key: str, patient_index: int 
     if not cache_path.exists():
         return None
 
-    cached = pd.read_pickle(cache_path)
+    try:
+        cached = _read_pickle_compat(cache_path)
+    except Exception:
+        return None
     return ExplanationResult(
         target_key=target_key,
         prediction=float(cached["prediction"]),
