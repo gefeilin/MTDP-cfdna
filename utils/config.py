@@ -159,8 +159,10 @@ CATEGORY_VALUE_LABEL_MAP = {
     },
     "DONOR_GENDER": {0: "MALE", 1: "FEMALE"},
     "DONOR_ETHNICITY": {0: "Non-hispanic", 1: "Hispanic", 2: "Others", -1: "Missing"},
+    "DONOR_HX_DIABETES": {0: "No", 1: "Yes", -1: "Missing"},
     "DONOR_HX_CANCER": {0: "No", 1: "Yes", -1: "Missing"},
     "DONOR_HX_HYPERTENSION": {0: "No", 1: "Yes", -1: "Missing"},
+    "DONOR_HX_CIG": {0: "No", 1: "Yes", -1: "Missing"},
     "DONOR_HX_ALCOHOL": {0: "No", 1: "Yes", -1: "Missing"},
     "DONOR_HX_DRUG": {0: "No", 1: "Yes", -1: "Missing"},
     "DONOR_CAUSE_OF_DEATH": {
