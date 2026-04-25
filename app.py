@@ -601,7 +601,7 @@ def load_example_dataframe() -> pd.DataFrame:
     schema = build_schema_artifacts()
     baseline = load_baseline_frame()
     example = baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
-    example["SUBJECT_NUMBER"] = "1234"
+    example["SUBJECT_NUMBER"] = [str(index) for index in range(1, len(example) + 1)]
     return example
 
 
@@ -614,7 +614,7 @@ def download_example(_n_clicks):
     schema = build_schema_artifacts()
     baseline = load_baseline_frame()
     example = baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
-    example["SUBJECT_NUMBER"] = "1234"
+    example["SUBJECT_NUMBER"] = [str(index) for index in range(1, len(example) + 1)]
     return dcc.send_data_frame(example.to_csv, "cfdna_example_data.csv", index=False)
 
 
