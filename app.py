@@ -36,7 +36,7 @@ app = dash.Dash(
     external_stylesheets=[dbc.themes.FLATLY],
     suppress_callback_exceptions=True,
 )
-app.title = "cfDNA Multitask DeepHit"
+app.title = "cfDNA Outcome Explorer"
 
 _SHAP_IMAGE_CACHE: OrderedDict[str, bytes] = OrderedDict()
 _MAX_SHAP_IMAGE_CACHE_ITEMS = 32
@@ -321,9 +321,9 @@ app.layout = dbc.Container(
         html.Div(
             className="hero",
             children=[
-                html.Div("cfDNA Multitask DeepHit", className="hero-title"),
+                html.Div("cfDNA Outcome Explorer", className="hero-title"),
                 html.P(
-                    "Trial 506 app for 2-year mortality, 1-year FEV1, severe ACR, clinical AMR, BLAD, MC-dropout uncertainty, and SHAP.",
+                    "Upload baseline predictors, review multitask predictions, edit one patient row, and compare original versus updated SHAP waterfalls.",
                     className="hero-sub",
                 ),
             ],
@@ -370,7 +370,7 @@ app.layout = dbc.Container(
                                                 [
                                                     html.Div("Click or drag a cfDNA predictor CSV here"),
                                                     html.Small(
-                                                        "Expected columns follow the trial 506 baseline feature schema."
+                                                        "Expected columns follow the app baseline predictor schema."
                                                     ),
                                                 ]
                                             ),
@@ -385,14 +385,18 @@ app.layout = dbc.Container(
                             children=[
                                 dbc.CardBody(
                                     [
-                                        html.Div("Notes", className="section-title"),
-                                                html.Ul(
+                                        html.Div("Quick tutorial", className="section-title"),
+                                        html.Ol(
                                             [
-                                                html.Li("The app expects the trial 506 baseline predictors."),
-                                                html.Li("No conformal calibration is used here; uncertainty comes from MC-dropout."),
-                                                html.Li("SHAP follows the SCD app pattern: saved cache first, then saved explainer. No live Kernel SHAP runs inside the app."),
+                                                html.Li("Start with `Load example data` if you want to test the workflow, or upload your own baseline predictor CSV."),
+                                                html.Li("After the table appears, click one patient row to load that patient into the detail panel."),
+                                                html.Li("Review the prediction cards, cumulative mortality curve, and FEV1 trajectory for the selected patient."),
+                                                html.Li("Edit values in `Editable feature row`, then click `Apply edits and rerun` to generate updated predictions."),
+                                                html.Li("Choose a SHAP target and click `Render SHAP` to compare the original waterfall with the updated waterfall."),
+                                                html.Li("Use `Download full table` if you want the full-precision prediction table as CSV."),
+                                                html.Li("Uncertainty bands come from MC-dropout, and SHAP uses saved caches or saved explainers only."),
                                             ],
-                                            style={"paddingLeft": "18px", "marginBottom": 0},
+                                            style={"paddingLeft": "20px", "marginBottom": 0},
                                         ),
                                     ]
                                 )
@@ -477,8 +481,34 @@ app.layout = dbc.Container(
                                             color="secondary",
                                             className="mt-3 mb-3",
                                         ),
-                                        html.Div(id="shap-status", className="mb-2"),
-                                        html.Div(id="shap-graph"),
+                                        dcc.Loading(
+                                            id="shap-loading",
+                                            delay_show=150,
+                                            overlay_style={
+                                                "visibility": "visible",
+                                                "backgroundColor": "rgba(255,255,255,0.68)",
+                                            },
+                                            custom_spinner=dbc.Alert(
+                                                html.Div(
+                                                    [
+                                                        html.Div(
+                                                            dbc.Spinner(size="sm", color="info"),
+                                                            style={"marginRight": "8px"},
+                                                        ),
+                                                        html.Span("Rendering SHAP waterfalls. Please wait a few seconds..."),
+                                                    ],
+                                                    style={"display": "flex", "alignItems": "center"},
+                                                ),
+                                                color="info",
+                                                className="mb-3",
+                                            ),
+                                            children=html.Div(
+                                                [
+                                                    html.Div(id="shap-status", className="mb-2"),
+                                                    html.Div(id="shap-graph"),
+                                                ]
+                                            ),
+                                        ),
                                     ]
                                 )
                             ],
@@ -554,7 +584,7 @@ def download_example(_n_clicks):
     schema = build_schema_artifacts()
     baseline = load_baseline_frame()
     example = baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
-    return dcc.send_data_frame(example.to_csv, "cfdna_trial506_example.csv", index=False)
+    return dcc.send_data_frame(example.to_csv, "cfdna_example_data.csv", index=False)
 
 
 @app.callback(
