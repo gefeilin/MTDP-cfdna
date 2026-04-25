@@ -80,6 +80,17 @@ def _category_label_lookup(feature_name: str) -> tuple[dict[str, str], dict[str,
     return forward, reverse
 
 
+def _category_missing_code(feature_name: str) -> str | None:
+    raw_feature_name = FEATURE_LABEL_REVERSE_MAP.get(feature_name, feature_name)
+    missing_code = canonicalize_category_value(-1)
+    if missing_code is None:
+        return None
+    for raw_value in CATEGORY_VALUE_LABEL_MAP.get(raw_feature_name, {}):
+        if canonicalize_category_value(raw_value) == missing_code:
+            return missing_code
+    return None
+
+
 def build_schema_artifacts() -> SchemaArtifacts:
     df = load_baseline_frame()
     if not SCHEMA_METADATA_PATH.exists():
@@ -133,6 +144,8 @@ def category_value_to_editor_label(feature_name: str, value) -> str:
     canonical_value = canonicalize_category_value(value)
     if canonical_value is None:
         return ""
+    if canonical_value == _category_missing_code(feature_name):
+        return ""
 
     forward, _reverse = _category_label_lookup(feature_name)
     return forward.get(canonical_value, canonical_value)
@@ -140,7 +153,8 @@ def category_value_to_editor_label(feature_name: str, value) -> str:
 
 def editor_label_to_category_value(feature_name: str, value) -> str:
     if pd.isna(value) or value == "":
-        return ""
+        missing_code = _category_missing_code(feature_name)
+        return "" if missing_code is None else missing_code
 
     forward, reverse = _category_label_lookup(feature_name)
     value_text = str(value)
@@ -163,8 +177,11 @@ def build_category_dropdown_options(schema: SchemaArtifacts) -> dict[str, dict[s
         options: list[dict[str, str]] = [{"label": "(empty)", "value": ""}]
         seen_labels = {""}
         forward, _reverse = _category_label_lookup(column)
+        missing_code = _category_missing_code(column)
 
         for canonical_value, label_text in forward.items():
+            if canonical_value == missing_code:
+                continue
             if label_text in seen_labels:
                 continue
             options.append({"label": label_text, "value": label_text})
@@ -180,6 +197,8 @@ def build_category_dropdown_options(schema: SchemaArtifacts) -> dict[str, dict[s
             )
 
         for canonical_value in sorted(observed_values, key=_category_sort_key):
+            if canonical_value == missing_code:
+                continue
             label_text = forward.get(canonical_value, canonical_value)
             if label_text in seen_labels:
                 continue
