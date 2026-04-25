@@ -209,11 +209,28 @@ app.layout = dbc.Container(
                                 dbc.CardBody(
                                     [
                                         html.Div("Input", className="section-title"),
-                                        dbc.Button(
-                                            "Download example CSV",
-                                            id="download-example-button",
-                                            color="primary",
-                                            className="w-100 mb-3",
+                                        dbc.Row(
+                                            [
+                                                dbc.Col(
+                                                    dbc.Button(
+                                                        "Load example data",
+                                                        id="load-example-button",
+                                                        color="success",
+                                                        className="w-100",
+                                                    ),
+                                                    md=6,
+                                                ),
+                                                dbc.Col(
+                                                    dbc.Button(
+                                                        "Download example CSV",
+                                                        id="download-example-button",
+                                                        color="primary",
+                                                        className="w-100",
+                                                    ),
+                                                    md=6,
+                                                ),
+                                            ],
+                                            className="g-2 mb-3",
                                         ),
                                         dcc.Download(id="download-example"),
                                         dcc.Upload(
@@ -357,6 +374,49 @@ def parse_uploaded_csv(contents: str) -> pd.DataFrame:
     return df
 
 
+def build_loaded_store(df: pd.DataFrame, source_name: str):
+    service = get_prediction_service()
+    subject_numbers = (
+        df["SUBJECT_NUMBER"].astype(str).tolist()
+        if "SUBJECT_NUMBER" in df.columns
+        else None
+    )
+    batch = service.prepare_batch(df, subject_numbers=subject_numbers)
+    prediction_df = service.predict_summary(batch)
+    known_indices = [
+        service.lookup_known_patient_index(subject) for subject in batch.subject_numbers
+    ]
+    store = {
+        "raw_records": batch.raw_features.to_dict("records"),
+        "subject_numbers": batch.subject_numbers,
+        "predictions": prediction_df.to_dict("records"),
+        "known_indices": known_indices,
+        "warnings": batch.warnings,
+    }
+    pieces = [
+        dbc.Alert(
+            f"{source_name} loaded successfully with {len(batch.raw_features)} row(s).",
+            color="success",
+            className="mb-2",
+        )
+    ]
+    if batch.warnings:
+        pieces.append(
+            dbc.Alert(
+                "Preprocessing notes: " + " ".join(batch.warnings[:4]),
+                color="warning",
+                className="mb-0",
+            )
+        )
+    return store, pieces
+
+
+def load_example_dataframe() -> pd.DataFrame:
+    schema = build_schema_artifacts()
+    baseline = load_baseline_frame()
+    return baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
+
+
 @app.callback(
     Output("download-example", "data"),
     Input("download-example-button", "n_clicks"),
@@ -373,48 +433,22 @@ def download_example(_n_clicks):
     Output("uploaded-data-store", "data"),
     Output("upload-status", "children"),
     Input("upload-data", "contents"),
+    Input("load-example-button", "n_clicks"),
     State("upload-data", "filename"),
+    prevent_initial_call=True,
 )
-def handle_upload(contents, filename):
-    if contents is None:
-        return no_update, dbc.Alert("Upload a CSV to begin.", color="light")
+def handle_upload(contents, _load_example_clicks, filename):
+    trigger = None
+    if dash.callback_context.triggered:
+        trigger = dash.callback_context.triggered[0]["prop_id"].split(".", 1)[0]
 
     try:
+        if trigger == "load-example-button":
+            return build_loaded_store(load_example_dataframe(), "Bundled example data")
+        if contents is None:
+            return no_update, dbc.Alert("Upload a CSV to begin.", color="light")
         df = parse_uploaded_csv(contents)
-        service = get_prediction_service()
-        subject_numbers = (
-            df["SUBJECT_NUMBER"].astype(str).tolist()
-            if "SUBJECT_NUMBER" in df.columns
-            else None
-        )
-        batch = service.prepare_batch(df, subject_numbers=subject_numbers)
-        prediction_df = service.predict_summary(batch)
-        known_indices = [
-            service.lookup_known_patient_index(subject) for subject in batch.subject_numbers
-        ]
-        store = {
-            "raw_records": batch.raw_features.to_dict("records"),
-            "subject_numbers": batch.subject_numbers,
-            "predictions": prediction_df.to_dict("records"),
-            "known_indices": known_indices,
-            "warnings": batch.warnings,
-        }
-        pieces = [
-            dbc.Alert(
-                f"{filename or 'CSV'} loaded successfully with {len(batch.raw_features)} row(s).",
-                color="success",
-                className="mb-2",
-            )
-        ]
-        if batch.warnings:
-            pieces.append(
-                dbc.Alert(
-                    "Preprocessing notes: " + " ".join(batch.warnings[:4]),
-                    color="warning",
-                    className="mb-0",
-                )
-            )
-        return store, pieces
+        return build_loaded_store(df, filename or "CSV")
     except Exception as exc:
         return no_update, dbc.Alert(str(exc), color="danger")
 
