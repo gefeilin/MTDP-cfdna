@@ -36,7 +36,7 @@ app = dash.Dash(
     external_stylesheets=[dbc.themes.FLATLY],
     suppress_callback_exceptions=True,
 )
-app.title = "cfDNA Outcome Explorer"
+app.title = "Mortality prediction for lung transplant"
 
 _SHAP_IMAGE_CACHE: OrderedDict[str, bytes] = OrderedDict()
 _MAX_SHAP_IMAGE_CACHE_ITEMS = 32
@@ -321,10 +321,38 @@ app.layout = dbc.Container(
         html.Div(
             className="hero",
             children=[
-                html.Div("cfDNA Outcome Explorer", className="hero-title"),
-                html.P(
-                    "Upload baseline predictors, review multitask predictions, edit one patient row, and compare original versus updated SHAP waterfalls.",
-                    className="hero-sub",
+                html.Div(
+                    [
+                        html.Div(
+                            [
+                                html.Div("Mortality prediction for lung transplant", className="hero-title"),
+                                html.P(
+                                    "Predicting 2-year mortality risk, 1-year FEV1, severe ACR, clinical AMR, and BLAD after lung transplant.",
+                                    className="hero-sub",
+                                ),
+                            ],
+                            style={"flex": "1"},
+                        ),
+                        html.Div(
+                            html.Img(
+                                src="https://www.nhlbi.nih.gov/themes/custom/nhlbi/logo.svg",
+                                alt="NHLBI Logo",
+                                style={
+                                    "height": "56px",
+                                    "maxWidth": "180px",
+                                    "filter": "brightness(0) invert(1)",
+                                },
+                            ),
+                            style={"display": "flex", "alignItems": "center"},
+                        ),
+                    ],
+                    style={
+                        "display": "flex",
+                        "justifyContent": "space-between",
+                        "alignItems": "center",
+                        "gap": "20px",
+                        "flexWrap": "wrap",
+                    },
                 ),
             ],
         ),
@@ -572,7 +600,9 @@ def build_loaded_store(df: pd.DataFrame, source_name: str):
 def load_example_dataframe() -> pd.DataFrame:
     schema = build_schema_artifacts()
     baseline = load_baseline_frame()
-    return baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
+    example = baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
+    example["SUBJECT_NUMBER"] = "1234"
+    return example
 
 
 @app.callback(
@@ -584,6 +614,7 @@ def download_example(_n_clicks):
     schema = build_schema_artifacts()
     baseline = load_baseline_frame()
     example = baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
+    example["SUBJECT_NUMBER"] = "1234"
     return dcc.send_data_frame(example.to_csv, "cfdna_example_data.csv", index=False)
 
 
@@ -848,41 +879,37 @@ def render_shap(_n_clicks, target_key, store, selected_row, edited_row):
             )
             png_token = _store_shap_image(png_bytes)
             png_src = f"/shap-image/{png_token}.png"
-            return dbc.Col(
-                dbc.Card(
-                    className="soft-card h-100",
-                    children=[
-                        dbc.CardBody(
-                            [
-                                html.Div(
-                                    title,
-                                    className="section-title",
-                                    style={"color": accent_color},
+            return dbc.Card(
+                className="soft-card mb-3",
+                children=[
+                    dbc.CardBody(
+                        [
+                            html.Div(
+                                title,
+                                className="section-title",
+                                style={"color": accent_color},
+                            ),
+                            html.Img(
+                                src=png_src,
+                                style={
+                                    "width": "100%",
+                                    "height": "auto",
+                                    "display": "block",
+                                    "backgroundColor": "white",
+                                    "borderRadius": "10px",
+                                },
+                            ),
+                            html.Div(
+                                html.A(
+                                    "Open SHAP image directly",
+                                    href=png_src,
+                                    target="_blank",
                                 ),
-                                html.Img(
-                                    src=png_src,
-                                    style={
-                                        "width": "100%",
-                                        "height": "auto",
-                                        "display": "block",
-                                        "backgroundColor": "white",
-                                        "borderRadius": "10px",
-                                    },
-                                ),
-                                html.Div(
-                                    html.A(
-                                        "Open SHAP image directly",
-                                        href=png_src,
-                                        target="_blank",
-                                    ),
-                                    style={"marginTop": "8px"},
-                                ),
-                            ]
-                        )
-                    ],
-                ),
-                xs=12,
-                xl=6,
+                                style={"marginTop": "8px"},
+                            ),
+                        ]
+                    )
+                ],
             )
 
         graph_children = [
@@ -917,10 +944,7 @@ def render_shap(_n_clicks, target_key, store, selected_row, edited_row):
             status_message += f" Updated SHAP rendered {updated_source_text.rstrip('.')} using the original feature order."
 
         status = dbc.Alert(status_message, color="success")
-        return status, dbc.Row(
-            graph_children,
-            className="g-3",
-        )
+        return status, html.Div(graph_children)
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger"), html.Div()
 
