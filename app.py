@@ -162,6 +162,12 @@ app.index_string = """
         border-radius: 999px;
         padding: 3px 10px;
       }
+      .app-footer-note {
+        color: #6b7280;
+        font-size: 0.78rem;
+        text-align: center;
+        margin: 26px 0 10px 0;
+      }
       @media (max-width: 768px) {
         .hero { padding: 22px 18px; }
         .hero-title { font-size: 1.42rem; }
@@ -546,6 +552,10 @@ app.layout = dbc.Container(
                     lg=9,
                 ),
             ]
+        ),
+        html.Div(
+            "Model powered by Multitask DeepHit. App design by Gefei Lin.",
+            className="app-footer-note",
         ),
     ],
 )
