@@ -57,6 +57,16 @@ def serve_shap_image(token: str):
         return Response(status=404)
     return Response(png_bytes, mimetype="image/png")
 
+
+@app.server.route("/download-example.csv")
+def serve_example_csv():
+    example = load_example_dataframe()
+    return Response(
+        example.to_csv(index=False),
+        mimetype="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="cfdna_example_data.csv"'},
+    )
+
 app.index_string = """
 <!DOCTYPE html>
 <html>
@@ -206,9 +216,18 @@ def metric_card(title: str, target_key: str, detail: dict, updated: dict | None 
             float(updated[target_key]),
             fev1_scaled_fallback=bool(updated.get("fev1_scaled_fallback", False)),
         )
+        updated_lower = updated.get(f"{target_key}_lower")
+        updated_upper = updated.get(f"{target_key}_upper")
+        updated_range_text = ""
+        if updated_lower is not None and updated_upper is not None:
+            if target_key == "fev1_1y":
+                updated_range_text = f"Updated MC interval: {updated_lower:.2f} to {updated_upper:.2f}"
+            else:
+                updated_range_text = f"Updated MC interval: {100*updated_lower:.1f}% to {100*updated_upper:.1f}%"
         updated_block = [
             html.Div("Updated", className="metric-label", style={"marginTop": "10px"}),
             html.Div(updated_value, className="metric-value", style={"fontSize": "1.2rem", "color": "#c2410c"}),
+            html.Div(updated_range_text, className="metric-range", style={"color": "#9a3412"}),
         ]
 
     return dbc.Card(
@@ -389,13 +408,14 @@ app.layout = dbc.Container(
                                                         id="download-example-button",
                                                         color="primary",
                                                         className="w-100",
+                                                        href="/download-example.csv",
+                                                        external_link=True,
                                                     ),
                                                     md=6,
                                                 ),
                                             ],
                                             className="g-2 mb-3",
                                         ),
-                                        dcc.Download(id="download-example"),
                                         dcc.Upload(
                                             id="upload-data",
                                             className="upload-zone",
@@ -613,19 +633,6 @@ def load_example_dataframe() -> pd.DataFrame:
     example = baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
     example["SUBJECT_NUMBER"] = [str(index) for index in range(1, len(example) + 1)]
     return example
-
-
-@app.callback(
-    Output("download-example", "data"),
-    Input("download-example-button", "n_clicks"),
-    prevent_initial_call=True,
-)
-def download_example(_n_clicks):
-    schema = build_schema_artifacts()
-    baseline = load_baseline_frame()
-    example = baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
-    example["SUBJECT_NUMBER"] = [str(index) for index in range(1, len(example) + 1)]
-    return dcc.send_data_frame(example.to_csv, "cfdna_example_data.csv", index=False)
 
 
 @app.callback(
