@@ -13,11 +13,16 @@ from .config import (
     FEATURE_LABEL_MAP,
     SHAP_BACKGROUND_SIZE,
     SHAP_CACHE_DIR,
+    SHAP_EXPLAINER_DIR,
     SHAP_NSAMPLES,
     TARGET_SPECS,
+    USE_SAVED_EXPLAINER_DEFAULT,
     USE_SAVED_SHAP_DEFAULT,
 )
 from .metadata import format_feature_value_for_display
+
+
+_EXPLAINER_CACHE: dict[tuple[str, str], object] = {}
 
 
 @dataclass
@@ -30,6 +35,7 @@ class ExplanationResult:
     feature_values: pd.Series
     from_cache: bool
     unit_label: str
+    source: str
 
 
 class PreparedTargetModel(torch.nn.Module):
@@ -91,6 +97,40 @@ class PreparedTargetModel(torch.nn.Module):
         if self.target_key == "BLAD":
             return outcome_preds[self.outcome_name_to_idx["BLAD"]].reshape(-1, 1)
         raise KeyError(f"Unsupported target_key: {self.target_key}")
+
+
+class KernelShapPredictor:
+    def __init__(self, service, target_key: str):
+        self.target_key = str(target_key)
+        self.service = None
+        self.device = None
+        self.wrapped_model = None
+        self.rebind(service)
+
+    def __getstate__(self):
+        return {"target_key": self.target_key}
+
+    def __setstate__(self, state):
+        self.target_key = str(state["target_key"])
+        self.service = None
+        self.device = None
+        self.wrapped_model = None
+
+    def rebind(self, service) -> None:
+        self.service = service
+        self.device = service.device
+        wrapped_model = PreparedTargetModel(service, self.target_key).to(service.device)
+        wrapped_model.eval()
+        self.wrapped_model = wrapped_model
+
+    def __call__(self, z):
+        if self.wrapped_model is None or self.device is None:
+            raise RuntimeError(
+                "Saved SHAP explainer predictor is not bound to a live prediction service."
+            )
+        tensor = torch.tensor(np.asarray(z, dtype=np.float32), dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            return self.wrapped_model(tensor).detach().cpu().numpy().reshape(-1)
 
 
 def _build_background_indices(service, bg_n: int, seed: int = 74) -> np.ndarray:
@@ -168,6 +208,10 @@ def _make_cache_path(target_key: str, patient_index: int) -> Path:
     return SHAP_CACHE_DIR / f"individual_{target_key}_patient{patient_index}_bg64_ns500.pkl"
 
 
+def _make_explainer_path(target_key: str, background_size: int) -> Path:
+    return SHAP_EXPLAINER_DIR / f"kernel_explainer_{target_key}_bg{int(background_size)}.dill"
+
+
 def _install_pickle_compat_aliases() -> None:
     sys.modules.setdefault("numpy._core", np.core)
     sys.modules.setdefault("numpy._core.numeric", np.core.numeric)
@@ -178,6 +222,16 @@ def _install_pickle_compat_aliases() -> None:
 def _read_pickle_compat(path: Path):
     _install_pickle_compat_aliases()
     return pd.read_pickle(path)
+
+
+def _read_dill_compat(path: Path):
+    try:
+        import dill
+    except ImportError:
+        return None
+    _install_pickle_compat_aliases()
+    with path.open("rb") as handle:
+        return dill.load(handle)
 
 
 def _feature_value_series_for_display(detail: dict) -> pd.Series:
@@ -193,12 +247,26 @@ def _feature_value_series_for_display(detail: dict) -> pd.Series:
     )
 
 
+def _use_saved_shap_enabled() -> bool:
+    return os.getenv("CFDNA_USE_SAVED_SHAP", "1" if USE_SAVED_SHAP_DEFAULT else "0") == "1"
+
+
+def _use_saved_explainer_enabled() -> bool:
+    return (
+        os.getenv(
+            "CFDNA_USE_SAVED_EXPLAINER",
+            "1" if USE_SAVED_EXPLAINER_DEFAULT else "0",
+        )
+        == "1"
+    )
+
+
 def _maybe_load_cached_explanation(service, target_key: str, patient_index: int | None, detail: dict):
     if patient_index is None:
         return None
     if target_key == "fev1_1y" and service.fev1_scale.scaled_fallback:
         return None
-    if os.getenv("CFDNA_USE_SAVED_SHAP", "1" if USE_SAVED_SHAP_DEFAULT else "0") != "1":
+    if not _use_saved_shap_enabled():
         return None
 
     cache_path = _make_cache_path(target_key, patient_index)
@@ -218,6 +286,125 @@ def _maybe_load_cached_explanation(service, target_key: str, patient_index: int 
         feature_values=_feature_value_series_for_display(detail),
         from_cache=True,
         unit_label=detail["fev1_display_label"] if target_key == "fev1_1y" else TARGET_SPECS[target_key]["unit"],
+        source="saved_cache",
+    )
+
+
+def build_kernel_explainer(service, target_key: str, *, background_size: int = SHAP_BACKGROUND_SIZE):
+    try:
+        import shap
+    except ImportError as exc:
+        raise RuntimeError("The `shap` package is required for SHAP explanations.") from exc
+
+    predictor = KernelShapPredictor(service, target_key)
+    bg_indices = _build_background_indices(
+        service,
+        bg_n=min(int(background_size), int(service.cohort_combined_prepared.shape[0])),
+    )
+    background = service.cohort_combined_prepared[bg_indices]
+    return shap.KernelExplainer(predictor, background, link="identity")
+
+
+def save_kernel_explainer(
+    service,
+    target_key: str,
+    *,
+    background_size: int = SHAP_BACKGROUND_SIZE,
+    overwrite: bool = False,
+) -> Path:
+    try:
+        import dill
+    except ImportError as exc:
+        raise RuntimeError("The `dill` package is required to save SHAP explainers.") from exc
+
+    path = _make_explainer_path(target_key, background_size)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and not overwrite:
+        return path
+
+    explainer = build_kernel_explainer(service, target_key, background_size=background_size)
+    with path.open("wb") as handle:
+        dill.dump(explainer, handle)
+    _EXPLAINER_CACHE[(str(path.resolve()), target_key)] = explainer
+    return path
+
+
+def _maybe_load_saved_explainer(service, target_key: str, background_size: int):
+    if not _use_saved_explainer_enabled():
+        return None
+    path = _make_explainer_path(target_key, background_size)
+    if not path.exists():
+        return None
+
+    cache_key = (str(path.resolve()), target_key)
+    explainer = _EXPLAINER_CACHE.get(cache_key)
+    if explainer is None:
+        try:
+            explainer = _read_dill_compat(path)
+        except Exception:
+            return None
+        if explainer is None:
+            return None
+        _EXPLAINER_CACHE[cache_key] = explainer
+
+    predictor = getattr(getattr(explainer, "model", None), "f", None)
+    if not hasattr(predictor, "rebind"):
+        return None
+
+    try:
+        predictor.rebind(service)
+    except Exception:
+        return None
+    return explainer
+
+
+def _normalize_shap_array(shap_raw) -> np.ndarray:
+    shap_array = np.asarray(shap_raw[0] if isinstance(shap_raw, list) else shap_raw)
+    if shap_array.ndim == 1:
+        shap_array = shap_array.reshape(1, -1)
+    if shap_array.ndim == 3 and shap_array.shape[-1] == 1:
+        shap_array = shap_array[..., 0]
+    return shap_array
+
+
+def _normalize_base_value(base_value) -> float:
+    if isinstance(base_value, (list, np.ndarray)):
+        return float(np.asarray(base_value).reshape(-1)[0])
+    return float(base_value)
+
+
+def _compute_from_explainer(
+    service,
+    detail: dict,
+    target_key: str,
+    explainer,
+    *,
+    nsamples: int,
+    source: str,
+) -> ExplanationResult:
+    explain_np = np.asarray(detail["prepared_input"], dtype=np.float32)
+    shap_raw = explainer.shap_values(explain_np, nsamples=int(nsamples), l1_reg="aic")
+    shap_array = _normalize_shap_array(shap_raw)
+    base_scalar = _normalize_base_value(explainer.expected_value)
+
+    prediction_fn = getattr(getattr(explainer, "model", None), "f", None)
+    if prediction_fn is None:
+        raise RuntimeError("Explainer is missing its prediction function.")
+
+    prediction = float(np.asarray(prediction_fn(explain_np)).reshape(-1)[0])
+    shap_series = _aggregate_single_shap(service, shap_array)
+    residual = prediction - base_scalar - float(shap_series.sum())
+
+    return ExplanationResult(
+        target_key=target_key,
+        prediction=prediction,
+        base_value=base_scalar,
+        shap_series=shap_series,
+        other_baseline_residual=float(residual),
+        feature_values=_feature_value_series_for_display(detail),
+        from_cache=(source == "saved_cache"),
+        unit_label=detail["fev1_display_label"] if target_key == "fev1_1y" else TARGET_SPECS[target_key]["unit"],
+        source=source,
     )
 
 
@@ -235,52 +422,27 @@ def compute_individual_explanation(
         cached = _maybe_load_cached_explanation(service, target_key, patient_index, detail)
         if cached is not None:
             return cached
+        saved_explainer = _maybe_load_saved_explainer(service, target_key, background_size)
+        if saved_explainer is not None:
+            return _compute_from_explainer(
+                service,
+                detail,
+                target_key,
+                saved_explainer,
+                nsamples=nsamples,
+                source="saved_explainer",
+            )
 
-    try:
-        import shap
-    except ImportError as exc:
-        raise RuntimeError("The `shap` package is required for dynamic explanations.") from exc
-
-    wrapped_model = PreparedTargetModel(service, target_key).to(service.device)
-    wrapped_model.eval()
-
-    bg_indices = _build_background_indices(
+    dynamic_explainer = build_kernel_explainer(
         service,
-        bg_n=min(int(background_size), int(service.cohort_combined_prepared.shape[0])),
+        target_key,
+        background_size=background_size,
     )
-    background = service.cohort_combined_prepared[bg_indices]
-    explain_np = np.asarray(detail["prepared_input"], dtype=np.float32)
-
-    def pred_fn(z):
-        tensor = torch.tensor(z, dtype=torch.float32, device=service.device)
-        with torch.no_grad():
-            return wrapped_model(tensor).detach().cpu().numpy().reshape(-1)
-
-    explainer = shap.KernelExplainer(pred_fn, background, link="identity")
-    shap_raw = explainer.shap_values(explain_np, nsamples=int(nsamples), l1_reg="aic")
-    shap_array = np.asarray(shap_raw[0] if isinstance(shap_raw, list) else shap_raw)
-    if shap_array.ndim == 1:
-        shap_array = shap_array.reshape(1, -1)
-    if shap_array.ndim == 3 and shap_array.shape[-1] == 1:
-        shap_array = shap_array[..., 0]
-
-    base_value = explainer.expected_value
-    if isinstance(base_value, (list, np.ndarray)):
-        base_scalar = float(np.asarray(base_value).reshape(-1)[0])
-    else:
-        base_scalar = float(base_value)
-
-    prediction = float(pred_fn(explain_np)[0])
-    shap_series = _aggregate_single_shap(service, shap_array)
-    residual = prediction - base_scalar - float(shap_series.sum())
-
-    return ExplanationResult(
-        target_key=target_key,
-        prediction=prediction,
-        base_value=base_scalar,
-        shap_series=shap_series,
-        other_baseline_residual=float(residual),
-        feature_values=_feature_value_series_for_display(detail),
-        from_cache=False,
-        unit_label=detail["fev1_display_label"] if target_key == "fev1_1y" else TARGET_SPECS[target_key]["unit"],
+    return _compute_from_explainer(
+        service,
+        detail,
+        target_key,
+        dynamic_explainer,
+        nsamples=nsamples,
+        source="dynamic_kernel_shap",
     )

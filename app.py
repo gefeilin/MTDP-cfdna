@@ -366,7 +366,7 @@ app.layout = dbc.Container(
                                             [
                                                 html.Li("The app expects the trial 506 baseline predictors."),
                                                 html.Li("No conformal calibration is used here; uncertainty comes from MC-dropout."),
-                                                html.Li("Saved SHAP caches are reused when available and can fall back to dynamic SHAP."),
+                                                html.Li("Saved SHAP caches are reused when available; otherwise saved explainers are tried before live Kernel SHAP."),
                                             ],
                                             style={"paddingLeft": "18px", "marginBottom": 0},
                                         ),
@@ -449,7 +449,7 @@ app.layout = dbc.Container(
                                                         id="force-dynamic-shap",
                                                         options=[
                                                             {
-                                                                "label": "Force dynamic SHAP instead of cache",
+                                                                "label": "Force live Kernel SHAP instead of saved cache/explainer",
                                                                 "value": "force",
                                                             }
                                                         ],
@@ -798,10 +798,14 @@ def render_shap(_n_clicks, target_key, force_flags, store, selected_row, edited_
             patient_index=patient_index,
             force_recompute=("force" in (force_flags or [])),
         )
+        source_text = {
+            "saved_cache": "from saved cache.",
+            "saved_explainer": "from saved explainer.",
+            "dynamic_kernel_shap": "with live Kernel SHAP.",
+        }.get(explanation.source, "with live Kernel SHAP.")
         status = dbc.Alert(
-            f"SHAP rendered for {TARGET_SPECS[target_key]['label']} "
-            + ("from saved cache." if explanation.from_cache else "with dynamic Kernel SHAP."),
-            color="success" if explanation.from_cache else "secondary",
+            f"SHAP rendered for {TARGET_SPECS[target_key]['label']} " + source_text,
+            color="success" if explanation.source in {"saved_cache", "saved_explainer"} else "secondary",
         )
         return status, html.Img(
             src=build_waterfall_image_data_url(explanation, top_n=8),
