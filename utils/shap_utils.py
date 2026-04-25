@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ import torch
 from .config import (
     FEATURE_LABEL_MAP,
     SHAP_BACKGROUND_SIZE,
+    SHAP_L1_REG,
     SHAP_CACHE_DIR,
     SHAP_EXPLAINER_DIR,
     SHAP_NSAMPLES,
@@ -23,6 +25,8 @@ from .metadata import format_feature_value_for_display
 
 
 _EXPLAINER_CACHE: dict[tuple[str, str], object] = {}
+logging.getLogger("shap").setLevel(logging.WARNING)
+logging.getLogger("shap.explainers._kernel").setLevel(logging.WARNING)
 
 
 @dataclass
@@ -212,6 +216,25 @@ def _make_explainer_path(target_key: str, background_size: int) -> Path:
     return SHAP_EXPLAINER_DIR / f"kernel_explainer_{target_key}_bg{int(background_size)}.dill"
 
 
+def _candidate_explainer_paths(target_key: str, background_size: int) -> list[Path]:
+    exact_path = _make_explainer_path(target_key, background_size)
+    candidates = [exact_path]
+    pattern = f"kernel_explainer_{target_key}_bg*.dill"
+    discovered = sorted(
+        SHAP_EXPLAINER_DIR.glob(pattern),
+        key=lambda path: (
+            abs(
+                int(path.stem.rsplit("_bg", 1)[-1]) - int(background_size)
+            ) if "_bg" in path.stem else 10**9,
+            path.name,
+        ),
+    )
+    for path in discovered:
+        if path not in candidates:
+            candidates.append(path)
+    return candidates
+
+
 def _install_pickle_compat_aliases() -> None:
     sys.modules.setdefault("numpy._core", np.core)
     sys.modules.setdefault("numpy._core.numeric", np.core.numeric)
@@ -332,30 +355,31 @@ def save_kernel_explainer(
 def _maybe_load_saved_explainer(service, target_key: str, background_size: int):
     if not _use_saved_explainer_enabled():
         return None
-    path = _make_explainer_path(target_key, background_size)
-    if not path.exists():
-        return None
+    for path in _candidate_explainer_paths(target_key, background_size):
+        if not path.exists():
+            continue
 
-    cache_key = (str(path.resolve()), target_key)
-    explainer = _EXPLAINER_CACHE.get(cache_key)
-    if explainer is None:
-        try:
-            explainer = _read_dill_compat(path)
-        except Exception:
-            return None
+        cache_key = (str(path.resolve()), target_key)
+        explainer = _EXPLAINER_CACHE.get(cache_key)
         if explainer is None:
-            return None
-        _EXPLAINER_CACHE[cache_key] = explainer
+            try:
+                explainer = _read_dill_compat(path)
+            except Exception:
+                continue
+            if explainer is None:
+                continue
+            _EXPLAINER_CACHE[cache_key] = explainer
 
-    predictor = getattr(getattr(explainer, "model", None), "f", None)
-    if not hasattr(predictor, "rebind"):
-        return None
+        predictor = getattr(getattr(explainer, "model", None), "f", None)
+        if not hasattr(predictor, "rebind"):
+            continue
 
-    try:
-        predictor.rebind(service)
-    except Exception:
-        return None
-    return explainer
+        try:
+            predictor.rebind(service)
+        except Exception:
+            continue
+        return explainer
+    return None
 
 
 def _normalize_shap_array(shap_raw) -> np.ndarray:
@@ -383,7 +407,13 @@ def _compute_from_explainer(
     source: str,
 ) -> ExplanationResult:
     explain_np = np.asarray(detail["prepared_input"], dtype=np.float32)
-    shap_raw = explainer.shap_values(explain_np, nsamples=int(nsamples), l1_reg="aic")
+    shap_raw = explainer.shap_values(
+        explain_np,
+        nsamples=int(nsamples),
+        l1_reg=SHAP_L1_REG,
+        silent=True,
+        gc_collect=True,
+    )
     shap_array = _normalize_shap_array(shap_raw)
     base_scalar = _normalize_base_value(explainer.expected_value)
 
