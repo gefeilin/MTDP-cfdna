@@ -24,6 +24,7 @@ from utils.modeling import get_prediction_service
 from utils.plots import (
     build_fev1_figure,
     build_survival_figure,
+    build_waterfall_feature_order,
     build_waterfall_png_bytes,
     format_target_value,
 )
@@ -794,46 +795,101 @@ def render_shap(_n_clicks, target_key, store, selected_row, edited_row):
         return dbc.Alert("Upload data and select a patient row first.", color="light"), {}
 
     try:
-        service, _row_index, _subject_number, known_index, original_detail, updated_detail, _updated_batch = _build_detail_context(
+        service, row_index, _subject_number, known_index, original_detail, updated_detail, _updated_batch = _build_detail_context(
             store, selected_row, edited_row
         )
-        detail = updated_detail or original_detail
-        patient_index = None if updated_detail is not None else known_index
-        explanation = compute_individual_explanation(
+        original_explanation = compute_individual_explanation(
             service,
-            detail,
+            original_detail,
             target_key,
-            patient_index=patient_index,
+            patient_index=known_index,
         )
         source_text = {
             "saved_cache": "from saved cache.",
             "saved_explainer": "from saved explainer.",
-        }.get(explanation.source, "from saved explainer.")
-        status = dbc.Alert(f"SHAP rendered for {TARGET_SPECS[target_key]['label']} " + source_text, color="success")
-        png_bytes = build_waterfall_png_bytes(explanation, top_n=8)
-        png_token = _store_shap_image(png_bytes)
-        png_src = f"/shap-image/{png_token}.png"
-        return status, html.Div(
-            [
-                html.Img(
-                    src=png_src,
-                    style={
-                        "width": "100%",
-                        "height": "auto",
-                        "display": "block",
-                        "backgroundColor": "white",
-                        "borderRadius": "10px",
-                    },
+        }.get(original_explanation.source, "from saved explainer.")
+        original_order = build_waterfall_feature_order(original_explanation, top_n=8)
+
+        def _build_shap_panel(title: str, explanation, *, feature_order: list[str], accent_color: str):
+            png_bytes = build_waterfall_png_bytes(
+                explanation,
+                top_n=8,
+                ordered_feature_names=feature_order,
+            )
+            png_token = _store_shap_image(png_bytes)
+            png_src = f"/shap-image/{png_token}.png"
+            return dbc.Col(
+                dbc.Card(
+                    className="soft-card h-100",
+                    children=[
+                        dbc.CardBody(
+                            [
+                                html.Div(
+                                    title,
+                                    className="section-title",
+                                    style={"color": accent_color},
+                                ),
+                                html.Img(
+                                    src=png_src,
+                                    style={
+                                        "width": "100%",
+                                        "height": "auto",
+                                        "display": "block",
+                                        "backgroundColor": "white",
+                                        "borderRadius": "10px",
+                                    },
+                                ),
+                                html.Div(
+                                    html.A(
+                                        "Open SHAP image directly",
+                                        href=png_src,
+                                        target="_blank",
+                                    ),
+                                    style={"marginTop": "8px"},
+                                ),
+                            ]
+                        )
+                    ],
                 ),
-                html.Div(
-                    html.A(
-                        "Open SHAP image directly",
-                        href=png_src,
-                        target="_blank",
-                    ),
-                    style={"marginTop": "8px"},
-                ),
-            ]
+                xs=12,
+                xl=6,
+            )
+
+        graph_children = [
+            _build_shap_panel(
+                "Original SHAP waterfall",
+                original_explanation,
+                feature_order=original_order,
+                accent_color="#1d4ed8",
+            )
+        ]
+        status_message = f"Original SHAP rendered for {TARGET_SPECS[target_key]['label']} {source_text}"
+
+        if updated_detail is not None and edited_row and int(edited_row["row_index"]) == int(row_index):
+            updated_explanation = compute_individual_explanation(
+                service,
+                updated_detail,
+                target_key,
+                patient_index=None,
+            )
+            updated_source_text = {
+                "saved_cache": "from saved cache.",
+                "saved_explainer": "from saved explainer.",
+            }.get(updated_explanation.source, "from saved explainer.")
+            graph_children.append(
+                _build_shap_panel(
+                    "Updated SHAP waterfall",
+                    updated_explanation,
+                    feature_order=original_order,
+                    accent_color="#c2410c",
+                )
+            )
+            status_message += f" Updated SHAP rendered {updated_source_text.rstrip('.')} using the original feature order."
+
+        status = dbc.Alert(status_message, color="success")
+        return status, dbc.Row(
+            graph_children,
+            className="g-3",
         )
     except Exception as exc:
         return dbc.Alert(str(exc), color="danger"), html.Div()

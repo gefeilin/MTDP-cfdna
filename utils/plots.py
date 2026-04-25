@@ -403,15 +403,11 @@ def build_waterfall_png_bytes(
     dpi: int = 220,
     predicted_prefix: str = "Predicted",
     predicted_label: str | None = None,
+    ordered_feature_names: list[str] | None = None,
 ) -> bytes:
     shap_series = explanation.shap_series.copy()
     feature_values = explanation.feature_values.copy()
     residual_feature_name = "__missing_residual_hidden__"
-
-    top_feature_count = min(len(shap_series), max(1, int(top_n) - 1))
-    top_feature_names = (
-        shap_series.abs().sort_values(ascending=False).head(top_feature_count).index.tolist()
-    )
 
     plot_shap_series = shap_series.copy()
     plot_feature_values = feature_values.copy()
@@ -419,10 +415,22 @@ def build_waterfall_png_bytes(
         plot_shap_series.loc[residual_feature_name] = float(explanation.other_baseline_residual)
         plot_feature_values.loc[residual_feature_name] = ""
 
-    remaining_feature_names = [
-        name for name in plot_shap_series.index.tolist() if name not in top_feature_names
-    ]
-    ordered_feature_names = top_feature_names + remaining_feature_names
+    if ordered_feature_names is None:
+        top_feature_count = min(len(shap_series), max(1, int(top_n) - 1))
+        top_feature_names = (
+            shap_series.abs().sort_values(ascending=False).head(top_feature_count).index.tolist()
+        )
+        remaining_feature_names = [
+            name for name in plot_shap_series.index.tolist() if name not in top_feature_names
+        ]
+        ordered_feature_names = top_feature_names + remaining_feature_names
+    else:
+        ordered_feature_names = [
+            name for name in ordered_feature_names if name in plot_shap_series.index
+        ] + [
+            name for name in plot_shap_series.index.tolist() if name not in set(ordered_feature_names)
+        ]
+
     order = np.array(
         [plot_shap_series.index.get_loc(name) for name in ordered_feature_names],
         dtype=int,
@@ -475,3 +483,23 @@ def build_waterfall_png_bytes(
     plt.close(figure)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def build_waterfall_feature_order(
+    explanation,
+    *,
+    top_n: int = 8,
+) -> list[str]:
+    shap_series = explanation.shap_series.copy()
+    residual_feature_name = "__missing_residual_hidden__"
+    if abs(float(explanation.other_baseline_residual)) > 0:
+        shap_series.loc[residual_feature_name] = float(explanation.other_baseline_residual)
+
+    top_feature_count = min(len(explanation.shap_series), max(1, int(top_n) - 1))
+    top_feature_names = (
+        explanation.shap_series.abs().sort_values(ascending=False).head(top_feature_count).index.tolist()
+    )
+    remaining_feature_names = [
+        name for name in shap_series.index.tolist() if name not in top_feature_names
+    ]
+    return top_feature_names + remaining_feature_names
