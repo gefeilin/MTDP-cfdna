@@ -448,31 +448,24 @@ def compute_individual_explanation(
     background_size: int = SHAP_BACKGROUND_SIZE,
     nsamples: int = SHAP_NSAMPLES,
 ) -> ExplanationResult:
-    if not force_recompute:
-        cached = _maybe_load_cached_explanation(service, target_key, patient_index, detail)
-        if cached is not None:
-            return cached
-        saved_explainer = _maybe_load_saved_explainer(service, target_key, background_size)
-        if saved_explainer is not None:
-            return _compute_from_explainer(
-                service,
-                detail,
-                target_key,
-                saved_explainer,
-                nsamples=nsamples,
-                source="saved_explainer",
-            )
+    _ = force_recompute
 
-    dynamic_explainer = build_kernel_explainer(
-        service,
-        target_key,
-        background_size=background_size,
-    )
-    return _compute_from_explainer(
-        service,
-        detail,
-        target_key,
-        dynamic_explainer,
-        nsamples=nsamples,
-        source="dynamic_kernel_shap",
+    cached = _maybe_load_cached_explanation(service, target_key, patient_index, detail)
+    if cached is not None:
+        return cached
+
+    saved_explainer = _maybe_load_saved_explainer(service, target_key, background_size)
+    if saved_explainer is not None:
+        return _compute_from_explainer(
+            service,
+            detail,
+            target_key,
+            saved_explainer,
+            nsamples=nsamples,
+            source="saved_explainer",
+        )
+
+    raise RuntimeError(
+        "No saved SHAP cache or saved explainer is available for this target. "
+        "Rebuild the saved explainers offline before rendering SHAP."
     )

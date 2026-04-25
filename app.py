@@ -385,11 +385,11 @@ app.layout = dbc.Container(
                                 dbc.CardBody(
                                     [
                                         html.Div("Notes", className="section-title"),
-                                        html.Ul(
+                                                html.Ul(
                                             [
                                                 html.Li("The app expects the trial 506 baseline predictors."),
                                                 html.Li("No conformal calibration is used here; uncertainty comes from MC-dropout."),
-                                                html.Li("Saved SHAP caches are reused when available; otherwise saved explainers are tried before live Kernel SHAP."),
+                                                html.Li("SHAP follows the SCD app pattern: saved cache first, then saved explainer. No live Kernel SHAP runs inside the app."),
                                             ],
                                             style={"paddingLeft": "18px", "marginBottom": 0},
                                         ),
@@ -465,21 +465,7 @@ app.layout = dbc.Container(
                                                         value="mortality_2y",
                                                         clearable=False,
                                                     ),
-                                                    md=6,
-                                                ),
-                                                dbc.Col(
-                                                    dbc.Checklist(
-                                                        id="force-dynamic-shap",
-                                                        options=[
-                                                            {
-                                                                "label": "Force live Kernel SHAP instead of saved cache/explainer",
-                                                                "value": "force",
-                                                            }
-                                                        ],
-                                                        value=[],
-                                                        switch=True,
-                                                    ),
-                                                    md=6,
+                                                    md=12,
                                                 ),
                                             ],
                                             className="align-items-center",
@@ -798,13 +784,12 @@ def render_patient_details(store, selected_row, edited_row):
     Output("shap-graph", "children"),
     Input("render-shap-button", "n_clicks"),
     State("shap-target-dropdown", "value"),
-    State("force-dynamic-shap", "value"),
     State("uploaded-data-store", "data"),
     State("selected-row-store", "data"),
     State("edited-row-store", "data"),
     prevent_initial_call=True,
 )
-def render_shap(_n_clicks, target_key, force_flags, store, selected_row, edited_row):
+def render_shap(_n_clicks, target_key, store, selected_row, edited_row):
     if not store or not selected_row:
         return dbc.Alert("Upload data and select a patient row first.", color="light"), {}
 
@@ -819,17 +804,12 @@ def render_shap(_n_clicks, target_key, force_flags, store, selected_row, edited_
             detail,
             target_key,
             patient_index=patient_index,
-            force_recompute=("force" in (force_flags or [])),
         )
         source_text = {
             "saved_cache": "from saved cache.",
             "saved_explainer": "from saved explainer.",
-            "dynamic_kernel_shap": "with live Kernel SHAP.",
-        }.get(explanation.source, "with live Kernel SHAP.")
-        status = dbc.Alert(
-            f"SHAP rendered for {TARGET_SPECS[target_key]['label']} " + source_text,
-            color="success" if explanation.source in {"saved_cache", "saved_explainer"} else "secondary",
-        )
+        }.get(explanation.source, "from saved explainer.")
+        status = dbc.Alert(f"SHAP rendered for {TARGET_SPECS[target_key]['label']} " + source_text, color="success")
         png_bytes = build_waterfall_png_bytes(explanation, top_n=8)
         png_token = _store_shap_image(png_bytes)
         png_src = f"/shap-image/{png_token}.png"

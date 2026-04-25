@@ -13,7 +13,7 @@ Main features:
 - Predict 2-year mortality, 1-year FEV1, and three binary intermediate outcomes
 - Show MC-dropout uncertainty bands for survival and FEV1
 - Edit a selected patient row and rerun the analysis
-- Reuse saved SHAP caches when they exist, then fall back to saved explainers, then to live Kernel SHAP
+- Reuse saved SHAP caches when they exist, then fall back to saved explainers. The app does not run live Kernel SHAP at request time.
 - Ship with the trial 506 checkpoint, cohort schema files, Optuna DB, and saved SHAP cache needed for standalone deployment
 
 Run:
@@ -39,4 +39,4 @@ Notes:
 - Minimal engine files are vendored into `engines/` so the app can run outside the original cfDNA project tree.
 - `app.py` supports `PORT` and `HOST` environment variables for hosted deployment targets such as Posit Cloud.
 - Set `CFDNA_USE_SAVED_SHAP=0` to skip saved per-patient SHAP caches.
-- Set `CFDNA_USE_SAVED_EXPLAINER=0` only if you want to force live Kernel SHAP instead of saved explainers.
+- If a saved SHAP explainer is missing, rebuild it offline with `scripts/build_saved_explainers.py` before running the app.
