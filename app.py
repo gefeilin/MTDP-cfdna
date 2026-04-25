@@ -57,16 +57,6 @@ def serve_shap_image(token: str):
         return Response(status=404)
     return Response(png_bytes, mimetype="image/png")
 
-
-@app.server.route("/download-example.csv")
-def serve_example_csv():
-    example = load_example_dataframe()
-    return Response(
-        example.to_csv(index=False),
-        mimetype="text/csv",
-        headers={"Content-Disposition": 'attachment; filename="cfdna_example_data.csv"'},
-    )
-
 app.index_string = """
 <!DOCTYPE html>
 <html>
@@ -403,18 +393,18 @@ app.layout = dbc.Container(
                                                     md=6,
                                                 ),
                                                 dbc.Col(
-                                                    html.A(
+                                                    dbc.Button(
                                                         "Download example CSV",
-                                                        href="/download-example.csv",
-                                                        download="cfdna_example_data.csv",
-                                                        className="btn btn-primary w-100",
-                                                        role="button",
+                                                        id="download-example-button",
+                                                        color="primary",
+                                                        className="w-100",
                                                     ),
                                                     md=6,
                                                 ),
                                             ],
                                             className="g-2 mb-3",
                                         ),
+                                        dcc.Download(id="download-example"),
                                         dcc.Upload(
                                             id="upload-data",
                                             className="upload-zone",
@@ -632,6 +622,16 @@ def load_example_dataframe() -> pd.DataFrame:
     example = baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
     example["SUBJECT_NUMBER"] = [str(index) for index in range(1, len(example) + 1)]
     return example
+
+
+@app.callback(
+    Output("download-example", "data"),
+    Input("download-example-button", "n_clicks"),
+    prevent_initial_call=True,
+)
+def download_example(_n_clicks):
+    example = load_example_dataframe()
+    return dcc.send_data_frame(example.to_csv, "cfdna_example_data.csv", index=False)
 
 
 @app.callback(
