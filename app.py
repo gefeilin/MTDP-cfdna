@@ -6,7 +6,7 @@ import os
 import dash
 import dash_bootstrap_components as dbc
 import pandas as pd
-from dash import Input, Output, State, dcc, html, dash_table, no_update
+from dash import ALL, Input, Output, State, dcc, html, dash_table, no_update
 
 from utils.config import FEATURE_LABEL_MAP, MC_SAMPLES_DEFAULT, TARGET_SPECS
 from utils.metadata import (
@@ -235,6 +235,56 @@ def build_prediction_frames(prediction_records: list[dict]) -> tuple[pd.DataFram
         download_df[display_name] = values_pct
 
     return display_df, download_df
+
+
+def _build_editor_controls(record: dict, schema, dropdown_options: dict[str, dict[str, object]]):
+    category_columns = set(
+        schema.passthrough_category_columns + schema.embedding_category_columns
+    )
+    controls = []
+
+    for feature_name in schema.feature_names:
+        label = FEATURE_LABEL_MAP.get(feature_name, feature_name)
+        value = record.get(feature_name, "")
+
+        if feature_name in category_columns:
+            control = dcc.Dropdown(
+                id={"type": "editor-input", "feature": feature_name},
+                options=dropdown_options[feature_name]["options"],
+                value=value if value not in {"", None} else None,
+                clearable=True,
+                placeholder="(empty)",
+                className="editor-dropdown",
+            )
+        else:
+            control = dbc.Input(
+                id={"type": "editor-input", "feature": feature_name},
+                type="number",
+                step="any",
+                value=value if value != "" else None,
+                placeholder="(empty)",
+                size="sm",
+            )
+
+        controls.append(
+            dbc.Col(
+                [
+                    html.Div(label, className="metric-label", style={"marginBottom": "6px"}),
+                    control,
+                ],
+                xs=12,
+                md=6,
+                xl=4,
+                className="mb-3",
+            )
+        )
+
+    return html.Div(
+        [
+            dbc.Alert("Blank value means missing.", color="light", className="py-2 mb-3"),
+            dbc.Row(controls, className="g-2"),
+        ]
+    )
 
 
 app.layout = dbc.Container(
@@ -611,51 +661,30 @@ def render_editor(store, selected_row):
         return dbc.Alert("Selected row is out of range.", color="danger")
 
     schema = build_schema_artifacts()
-    category_columns = set(
-        schema.passthrough_category_columns + schema.embedding_category_columns
-    )
     dropdown_options = build_category_dropdown_options(schema)
-    row_df = pd.DataFrame([normalize_editor_record(raw_records[row_index], schema)])
-    columns = [
-        {
-            "name": FEATURE_LABEL_MAP.get(feature_name, feature_name),
-            "id": feature_name,
-            "editable": True,
-            **({"presentation": "dropdown"} if feature_name in category_columns else {}),
-        }
-        for feature_name in schema.feature_names
-    ]
-
-    return dash_table.DataTable(
-        id="editor-table",
-        data=row_df.to_dict("records"),
-        columns=columns,
-        editable=True,
-        dropdown=dropdown_options,
-        style_table={"overflowX": "auto"},
-        style_cell={"minWidth": "180px", "maxWidth": "240px", "whiteSpace": "normal", "padding": "8px"},
-        style_header={
-            "backgroundColor": "#eef5ff",
-            "fontWeight": "600",
-            "border": "0",
-        },
-    )
+    normalized_record = normalize_editor_record(raw_records[row_index], schema)
+    return _build_editor_controls(normalized_record, schema, dropdown_options)
 
 
 @app.callback(
     Output("edited-row-store", "data"),
     Input("apply-edit-button", "n_clicks"),
-    State("editor-table", "data"),
+    State({"type": "editor-input", "feature": ALL}, "value"),
+    State({"type": "editor-input", "feature": ALL}, "id"),
     State("selected-row-store", "data"),
     prevent_initial_call=True,
 )
-def apply_edits(_n_clicks, table_data, selected_row):
-    if not table_data or not selected_row:
+def apply_edits(_n_clicks, editor_values, editor_ids, selected_row):
+    if not editor_ids or not selected_row:
         return no_update
+    record = {
+        item["feature"]: value
+        for item, value in zip(editor_ids, editor_values)
+    }
     schema = build_schema_artifacts()
     return {
         "row_index": int(selected_row["row_index"]),
-        "record": coerce_editor_record_for_model(table_data[0], schema),
+        "record": coerce_editor_record_for_model(record, schema),
     }
 
 

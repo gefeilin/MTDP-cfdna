@@ -194,6 +194,7 @@ class CfDNAPredictionService:
         self.ModelDeepHit_Multitask = ModelDeepHit_Multitask
         self.prepare_input_dims = prepare_input_dims
         self.time_bin_edges_years = np.asarray(TIME_BIN_EDGES_YEARS, dtype=np.float32)
+        self.display_survival_bins = int(len(self.time_bin_edges_years))
         self.num_category = int(len(TIME_BIN_REPRESENTATIVES_YEARS))
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -528,6 +529,8 @@ class CfDNAPredictionService:
                     death_mass = survival_out[:, 0, :].detach().cpu().numpy()
                     cumulative_risk = np.cumsum(death_mass, axis=1)
                     survival_probability = np.clip(1.0 - cumulative_risk, 0.0, 1.0)
+                    cumulative_risk_display = cumulative_risk[:, : self.display_survival_bins]
+                    survival_probability_display = survival_probability[:, : self.display_survival_bins]
 
                     fev1_coefficients = outcome_preds[0].detach().cpu().numpy()
                     fev1_1y_scaled = fev1_coefficients @ self.fev1_basis_vector
@@ -541,7 +544,9 @@ class CfDNAPredictionService:
                         {
                             "death_mass": death_mass,
                             "cumulative_risk": cumulative_risk,
+                            "cumulative_risk_display": cumulative_risk_display,
                             "survival_probability": survival_probability,
+                            "survival_probability_display": survival_probability_display,
                             "mortality_2y": cumulative_risk[:, horizon_bins - 1],
                             "fev1_1y_scaled": fev1_1y_scaled,
                             "fev1_1y": fev1_1y_scaled * self.fev1_scale.std + self.fev1_scale.mean,
@@ -563,24 +568,26 @@ class CfDNAPredictionService:
 
     def predict_summary(self, batch: PreparedBatch) -> pd.DataFrame:
         predictions = self._predict_arrays(batch.x, batch.mask, samples=1, stochastic=False)
-        summary = {
-            "subject_number": batch.subject_numbers,
-            "mortality_2y": predictions["mortality_2y"][0],
-            "fev1_1y": predictions["fev1_1y"][0],
-            "severe_ACR": predictions["severe_ACR"][0],
-            "ever_clinical_AMR": predictions["ever_clinical_AMR"][0],
-            "BLAD": predictions["BLAD"][0],
-        }
+        summary_df = pd.DataFrame(
+            {
+                "subject_number": batch.subject_numbers,
+                "mortality_2y": predictions["mortality_2y"][0],
+                "fev1_1y": predictions["fev1_1y"][0],
+                "severe_ACR": predictions["severe_ACR"][0],
+                "ever_clinical_AMR": predictions["ever_clinical_AMR"][0],
+                "BLAD": predictions["BLAD"][0],
+            }
+        )
 
-        cumulative_risk = predictions["cumulative_risk"][0]
+        cumulative_risk = predictions["cumulative_risk_display"][0]
         for horizon_index, horizon_years in enumerate(
             self.time_bin_edges_years[: cumulative_risk.shape[1]]
         ):
-            summary[f"mortality_risk_{_format_horizon_suffix(horizon_years)}y"] = cumulative_risk[
+            summary_df[f"mortality_risk_{_format_horizon_suffix(horizon_years)}y"] = cumulative_risk[
                 :, horizon_index
             ]
 
-        return pd.DataFrame(summary)
+        return summary_df
 
     def predict_single(
         self,
@@ -599,7 +606,7 @@ class CfDNAPredictionService:
                 if self.fev1_scale.scaled_fallback
                 else TARGET_SPECS["fev1_1y"]["label"]
             ),
-            "time_years": self.time_bin_edges_years[: deterministic["cumulative_risk"].shape[-1]],
+            "time_years": self.time_bin_edges_years[: deterministic["cumulative_risk_display"].shape[-1]],
             "months": self.fev1_month_grid,
             "prepared_input": self._prepare_combined(batch.x, batch.mask),
             "raw_features": batch.raw_features.copy(),
@@ -610,8 +617,8 @@ class CfDNAPredictionService:
             "severe_ACR": float(deterministic["severe_ACR"][0, 0]),
             "ever_clinical_AMR": float(deterministic["ever_clinical_AMR"][0, 0]),
             "BLAD": float(deterministic["BLAD"][0, 0]),
-            "survival_curve": deterministic["cumulative_risk"][0, 0],
-            "survival_probability": deterministic["survival_probability"][0, 0],
+            "survival_curve": deterministic["cumulative_risk_display"][0, 0],
+            "survival_probability": deterministic["survival_probability_display"][0, 0],
             "fev1_curve": deterministic["fev1_curve"][0, 0],
         }
 
@@ -627,7 +634,6 @@ class CfDNAPredictionService:
                 "ever_clinical_AMR",
                 "BLAD",
             ]:
-                result[f"{target_name}_mc_mean"] = float(draws[target_name][:, 0].mean())
                 result[f"{target_name}_lower"] = float(
                     np.quantile(draws[target_name][:, 0], lower_q)
                 )
@@ -635,13 +641,21 @@ class CfDNAPredictionService:
                     np.quantile(draws[target_name][:, 0], upper_q)
                 )
 
-            result["survival_curve_mc_mean"] = draws["cumulative_risk"][:, 0, :].mean(axis=0)
-            result["survival_curve_lower"] = np.quantile(
-                draws["cumulative_risk"][:, 0, :], lower_q, axis=0
+            result["survival_curve_mc_mean"] = draws["cumulative_risk_display"][:, 0, :].mean(axis=0)
+            survival_curve_lower = np.quantile(
+                draws["cumulative_risk_display"][:, 0, :], lower_q, axis=0
             )
-            result["survival_curve_upper"] = np.quantile(
-                draws["cumulative_risk"][:, 0, :], upper_q, axis=0
+            survival_curve_upper = np.quantile(
+                draws["cumulative_risk_display"][:, 0, :], upper_q, axis=0
             )
+            survival_curve_lower = np.maximum.accumulate(
+                np.clip(survival_curve_lower, 0.0, 1.0)
+            )
+            survival_curve_upper = np.maximum.accumulate(
+                np.clip(survival_curve_upper, survival_curve_lower, 1.0)
+            )
+            result["survival_curve_lower"] = survival_curve_lower
+            result["survival_curve_upper"] = survival_curve_upper
             result["fev1_curve_mc_mean"] = draws["fev1_curve"][:, 0, :].mean(axis=0)
             result["fev1_curve_lower"] = np.quantile(
                 draws["fev1_curve"][:, 0, :], lower_q, axis=0
