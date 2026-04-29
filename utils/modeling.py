@@ -19,6 +19,7 @@ from .config import (
     FEATURE_LABEL_REVERSE_MAP,
     FEV1_TARGET_MONTH,
     MC_INTERVAL_ALPHA,
+    MC_RANDOM_SEED_DEFAULT,
     MC_SAMPLES_DEFAULT,
     MODEL_METADATA_PATH,
     MORTALITY_TARGET_YEARS,
@@ -505,12 +506,21 @@ class CfDNAPredictionService:
         *,
         samples: int,
         stochastic: bool,
+        seed: int | None = None,
     ) -> dict[str, np.ndarray]:
         x_tensor = torch.tensor(x, dtype=torch.float32, device=self.device)
         mask_tensor = torch.tensor(mask, dtype=torch.float32, device=self.device)
 
         original_mode = self.model.training
         self.model.train(stochastic)
+        rng_seed = int(seed) if stochastic and seed is not None else None
+        rng_devices = []
+        if rng_seed is not None and self.device.type == "cuda":
+            rng_devices = [
+                self.device.index
+                if self.device.index is not None
+                else torch.cuda.current_device()
+            ]
 
         draws: list[dict[str, np.ndarray]] = []
         horizon_bins = int(
@@ -523,39 +533,45 @@ class CfDNAPredictionService:
         )
 
         try:
-            with torch.no_grad():
-                for _ in range(max(samples, 1)):
-                    survival_out, outcome_preds, _ = self.model(x_tensor, mask_tensor)
-                    death_mass = survival_out[:, 0, :].detach().cpu().numpy()
-                    cumulative_risk = np.cumsum(death_mass, axis=1)
-                    survival_probability = np.clip(1.0 - cumulative_risk, 0.0, 1.0)
-                    cumulative_risk_display = cumulative_risk[:, : self.display_survival_bins]
-                    survival_probability_display = survival_probability[:, : self.display_survival_bins]
+            with torch.random.fork_rng(devices=rng_devices, enabled=rng_seed is not None):
+                if rng_seed is not None:
+                    torch.manual_seed(rng_seed)
+                    if self.device.type == "cuda":
+                        torch.cuda.manual_seed_all(rng_seed)
 
-                    fev1_coefficients = outcome_preds[0].detach().cpu().numpy()
-                    fev1_1y_scaled = fev1_coefficients @ self.fev1_basis_vector
-                    fev1_curve_scaled = fev1_coefficients @ self.fev1_basis_matrix.T
+                with torch.no_grad():
+                    for _ in range(max(samples, 1)):
+                        survival_out, outcome_preds, _ = self.model(x_tensor, mask_tensor)
+                        death_mass = survival_out[:, 0, :].detach().cpu().numpy()
+                        cumulative_risk = np.cumsum(death_mass, axis=1)
+                        survival_probability = np.clip(1.0 - cumulative_risk, 0.0, 1.0)
+                        cumulative_risk_display = cumulative_risk[:, : self.display_survival_bins]
+                        survival_probability_display = survival_probability[:, : self.display_survival_bins]
 
-                    severe_acr = outcome_preds[1].detach().cpu().numpy().reshape(-1)
-                    clinical_amr = outcome_preds[2].detach().cpu().numpy().reshape(-1)
-                    blad = outcome_preds[3].detach().cpu().numpy().reshape(-1)
+                        fev1_coefficients = outcome_preds[0].detach().cpu().numpy()
+                        fev1_1y_scaled = fev1_coefficients @ self.fev1_basis_vector
+                        fev1_curve_scaled = fev1_coefficients @ self.fev1_basis_matrix.T
 
-                    draws.append(
-                        {
-                            "death_mass": death_mass,
-                            "cumulative_risk": cumulative_risk,
-                            "cumulative_risk_display": cumulative_risk_display,
-                            "survival_probability": survival_probability,
-                            "survival_probability_display": survival_probability_display,
-                            "mortality_2y": cumulative_risk[:, horizon_bins - 1],
-                            "fev1_1y_scaled": fev1_1y_scaled,
-                            "fev1_1y": fev1_1y_scaled * self.fev1_scale.std + self.fev1_scale.mean,
-                            "fev1_curve": fev1_curve_scaled * self.fev1_scale.std + self.fev1_scale.mean,
-                            "severe_ACR": severe_acr,
-                            "ever_clinical_AMR": clinical_amr,
-                            "BLAD": blad,
-                        }
-                    )
+                        severe_acr = outcome_preds[1].detach().cpu().numpy().reshape(-1)
+                        clinical_amr = outcome_preds[2].detach().cpu().numpy().reshape(-1)
+                        blad = outcome_preds[3].detach().cpu().numpy().reshape(-1)
+
+                        draws.append(
+                            {
+                                "death_mass": death_mass,
+                                "cumulative_risk": cumulative_risk,
+                                "cumulative_risk_display": cumulative_risk_display,
+                                "survival_probability": survival_probability,
+                                "survival_probability_display": survival_probability_display,
+                                "mortality_2y": cumulative_risk[:, horizon_bins - 1],
+                                "fev1_1y_scaled": fev1_1y_scaled,
+                                "fev1_1y": fev1_1y_scaled * self.fev1_scale.std + self.fev1_scale.mean,
+                                "fev1_curve": fev1_curve_scaled * self.fev1_scale.std + self.fev1_scale.mean,
+                                "severe_ACR": severe_acr,
+                                "ever_clinical_AMR": clinical_amr,
+                                "BLAD": blad,
+                            }
+                        )
         finally:
             self.model.train(original_mode)
             self.model.eval()
@@ -594,6 +610,7 @@ class CfDNAPredictionService:
         batch: PreparedBatch,
         *,
         mc_samples: int = MC_SAMPLES_DEFAULT,
+        mc_seed: int | None = MC_RANDOM_SEED_DEFAULT,
     ) -> dict[str, Any]:
         deterministic = self._predict_arrays(batch.x, batch.mask, samples=1, stochastic=False)
         result: dict[str, Any] = {
@@ -623,7 +640,13 @@ class CfDNAPredictionService:
         }
 
         if mc_samples and mc_samples > 1:
-            draws = self._predict_arrays(batch.x, batch.mask, samples=mc_samples, stochastic=True)
+            draws = self._predict_arrays(
+                batch.x,
+                batch.mask,
+                samples=mc_samples,
+                stochastic=True,
+                seed=mc_seed,
+            )
             lower_q = MC_INTERVAL_ALPHA / 2.0
             upper_q = 1.0 - lower_q
 
