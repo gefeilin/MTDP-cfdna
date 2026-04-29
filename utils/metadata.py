@@ -19,7 +19,10 @@ from .config import (
 )
 
 
-POWER2_DISPLAY_FEATURES = {"AUC_ddcfDNA_Copies_1_30"}
+POWER2_DISPLAY_FEATURES = {
+    "AUC_ddcfDNA_Copies_1_30",
+    "AUC_rdcfDNA_Copies_1_30",
+}
 
 
 def load_baseline_frame() -> pd.DataFrame:
