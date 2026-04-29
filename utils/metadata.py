@@ -19,6 +19,9 @@ from .config import (
 )
 
 
+POWER2_DISPLAY_FEATURES = {"AUC_ddcfDNA_Copies_1_30"}
+
+
 def load_baseline_frame() -> pd.DataFrame:
     df = pd.read_csv(DATA_DIR / BASELINE_CSV_FILENAME).rename(
         columns={"log2_rdcfDNA_(Copies/mL)": "log2_rdcfDNA_.Copies.mL."}
@@ -219,7 +222,9 @@ def normalize_editor_record(record: dict, schema: SchemaArtifacts) -> dict:
         if feature_name in category_columns:
             normalized[feature_name] = category_value_to_editor_label(feature_name, value)
         else:
-            normalized[feature_name] = "" if pd.isna(value) else value
+            normalized[feature_name] = (
+                "" if pd.isna(value) else feature_value_to_editor_value(feature_name, value)
+            )
 
     return normalized
 
@@ -234,9 +239,47 @@ def coerce_editor_record_for_model(record: dict, schema: SchemaArtifacts) -> dic
             canonical_value = editor_label_to_category_value(feature_name, value)
             coerced[feature_name] = np.nan if canonical_value == "" else canonical_value
         else:
-            coerced[feature_name] = np.nan if value == "" else value
+            coerced[feature_name] = (
+                np.nan if value == "" else editor_value_to_model_value(feature_name, value)
+            )
 
     return coerced
+
+
+def _raw_feature_name(feature_name: str) -> str:
+    return FEATURE_LABEL_REVERSE_MAP.get(feature_name, feature_name)
+
+
+def _uses_power2_display(feature_name: str) -> bool:
+    return _raw_feature_name(feature_name) in POWER2_DISPLAY_FEATURES
+
+
+def _coerce_numeric(value) -> float | None:
+    numeric_value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(numeric_value):
+        return None
+    numeric_value = float(numeric_value)
+    if not np.isfinite(numeric_value):
+        return None
+    return numeric_value
+
+
+def feature_value_to_editor_value(feature_name: str, value):
+    numeric_value = _coerce_numeric(value)
+    if numeric_value is None:
+        return value
+    if _uses_power2_display(feature_name):
+        return round(float(np.power(2.0, numeric_value)))
+    return value
+
+
+def editor_value_to_model_value(feature_name: str, value):
+    numeric_value = _coerce_numeric(value)
+    if numeric_value is None:
+        return value
+    if _uses_power2_display(feature_name):
+        return np.nan if numeric_value <= 0 else float(np.log2(numeric_value))
+    return value
 
 
 def map_categorical_value_for_display(feature_name: str, value) -> str | float | int:
@@ -259,6 +302,12 @@ def map_categorical_value_for_display(feature_name: str, value) -> str | float |
 
 
 def format_feature_value_for_display(feature_name: str, value) -> str:
+    if _uses_power2_display(feature_name):
+        numeric_value = _coerce_numeric(value)
+        if numeric_value is None:
+            return "NA"
+        return f"{np.power(2.0, numeric_value):.0f}"
+
     mapped_value = map_categorical_value_for_display(feature_name, value)
     if pd.isna(mapped_value):
         return "NA"
