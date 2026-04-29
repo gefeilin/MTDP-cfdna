@@ -14,19 +14,29 @@ Main features:
 - Show MC-dropout uncertainty bands for survival and FEV1
 - Edit a selected patient row and rerun the analysis
 - Reuse saved SHAP caches when they exist, then fall back to saved explainers. The app does not run live Kernel SHAP at request time.
+- Ship with the trial 506 checkpoint, cohort schema files, Optuna DB, and saved SHAP cache needed for standalone deployment
 
 Run:
 
 ```bash
-cd /data/ling2/Sean_project/cfDNA_project/cfdna_multitask_project_organized/app
+cd MTDP-cfdna
 python app.py
 ```
 
 Notes:
 - The app intentionally does not depend on the old SCD app layout.
 - It avoids the old conformal calibration flow and uses MC-dropout uncertainty instead.
-- The app now loads fixed trial 506 FEV1 scaling metadata from `app/data/model_metadata.json`.
-- The app now tries to load saved individual SHAP pickle caches from `results/kernel_shap_cache_trial506_noaucddpct` by default.
-- The app can also load target-specific saved explainers from `app/data/saved_explainers`.
+- The app loads fixed trial 506 FEV1 scaling metadata from `data/model_metadata.json`.
+- The app also loads the fixed trial 506 network structure and B-spline settings from `data/model_metadata.json`, so Optuna DB metadata is no longer needed for inference.
+- Full training normalization and categorical encoding metadata are frozen in `data/schema_metadata.json`.
+- The app tries to load saved individual SHAP pickle caches from `results/kernel_shap_cache_trial506_noaucddpct` by default.
+- The app can also load target-specific saved explainers from `data/saved_explainers`.
+- The repository now includes the trial 506 runtime assets required for standalone hosting:
+  - `data/demo_survival_supplementary_no30_death_only_v5.csv` containing only the first 10 sample rows
+  - `data/schema_metadata.json` containing frozen full-training schema statistics
+  - `results/death_only/.../trial506_all_data_retrain_best_model.pt`
+  - `results/kernel_shap_cache_trial506_noaucddpct/*.pkl` trimmed to the minimal sample cache set
+- Minimal engine files are vendored into `engines/` so the app can run outside the original cfDNA project tree.
+- `app.py` supports `PORT` and `HOST` environment variables for hosted deployment targets such as Posit Cloud.
 - Set `CFDNA_USE_SAVED_SHAP=0` to skip saved per-patient SHAP caches.
 - If a saved SHAP explainer is missing, rebuild it offline with `scripts/build_saved_explainers.py` before running the app.

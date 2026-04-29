@@ -2,20 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-APP_DIR = Path(__file__).resolve().parents[1]
+REPO_DIR = Path(__file__).resolve().parents[1]
+APP_DIR = REPO_DIR
 APP_DATA_DIR = APP_DIR / "data"
-PROJECT_DIR = APP_DIR.parent
-CFDNA_ROOT_DIR = PROJECT_DIR.parent
-DATA_DIR = CFDNA_ROOT_DIR / "data"
+PROJECT_DIR = REPO_DIR
+CFDNA_ROOT_DIR = REPO_DIR
+DATA_DIR = REPO_DIR / "data"
 MODEL_METADATA_PATH = APP_DATA_DIR / "model_metadata.json"
 SCHEMA_METADATA_PATH = APP_DATA_DIR / "schema_metadata.json"
-
-DB_PATH = PROJECT_DIR / "multitask_deephit_v1_4_cfdna_optuna_death_only_v5_maskhead_feature_ablation.db"
-STUDY_NAME = (
-    "multitask_deephit_v1_4_cfdna_optuna_death_only_"
-    "v5_maskhead_nosite_nopeakdsa_noweights_noaucddpct-20260418v1"
-)
-TRIAL_NUMBER = 506
 
 BASELINE_CSV_FILENAME = "demo_survival_supplementary_no30_death_only_v5.csv"
 CHECKPOINT_FALLBACK = (

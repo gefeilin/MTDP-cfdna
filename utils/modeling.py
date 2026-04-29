@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -16,7 +15,6 @@ from scipy.interpolate import BSpline
 from .config import (
     CAT_EMBEDDING_DIM,
     CHECKPOINT_FALLBACK,
-    DB_PATH,
     FEATURE_LABEL_MAP,
     FEATURE_LABEL_REVERSE_MAP,
     FEV1_TARGET_MONTH,
@@ -25,11 +23,9 @@ from .config import (
     MODEL_METADATA_PATH,
     MORTALITY_TARGET_YEARS,
     SHAP_CACHE_DIR,
-    STUDY_NAME,
     TARGET_SPECS,
-    TRIAL_NUMBER,
 )
-from .metadata import build_display_frame, build_schema_artifacts
+from .metadata import build_display_frame, build_schema_artifacts, canonicalize_category_value
 from .runtime import add_project_paths, install_runtime_shims
 
 
@@ -61,80 +57,67 @@ class PreparedBatch:
     warnings: list[str]
 
 
-def _decode_trial_param(param_value: float, distribution_json: str):
-    distribution = json.loads(distribution_json)
-    if distribution["name"] == "CategoricalDistribution":
-        choices = distribution["attributes"]["choices"]
-        return choices[int(round(param_value))]
-    return param_value
+def _format_horizon_suffix(years: float) -> str:
+    return f"{float(years):.2f}".rstrip("0").rstrip(".")
+
+
+@lru_cache(maxsize=1)
+def _load_model_metadata() -> dict[str, Any]:
+    if not MODEL_METADATA_PATH.exists():
+        raise FileNotFoundError(
+            f"Model metadata file is missing: {MODEL_METADATA_PATH}"
+        )
+    with MODEL_METADATA_PATH.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def _load_trial_settings() -> TrialSettings:
-    if DB_PATH.exists():
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            trial_id_row = conn.execute(
-                """
-                SELECT t.trial_id
-                FROM trials t
-                JOIN studies s ON t.study_id = s.study_id
-                WHERE t.number = ? AND s.study_name = ?
-                """,
-                (TRIAL_NUMBER, STUDY_NAME),
-            ).fetchone()
-            if trial_id_row is None:
-                raise ValueError("Trial was not found in the Optuna database.")
-
-            trial_id = trial_id_row[0]
-            params = {
-                name: _decode_trial_param(value, distribution_json)
-                for name, value, distribution_json in conn.execute(
-                    """
-                    SELECT param_name, param_value, distribution_json
-                    FROM trial_params
-                    WHERE trial_id = ?
-                    ORDER BY param_name
-                    """,
-                    (trial_id,),
-                ).fetchall()
-            }
-            attrs = dict(
-                conn.execute(
-                    "SELECT key, value_json FROM trial_user_attributes WHERE trial_id = ?",
-                    (trial_id,),
-                ).fetchall()
-            )
-        finally:
-            conn.close()
-    else:
-        params = {}
-        attrs = {}
+    metadata = _load_model_metadata()
+    model_settings = metadata.get("model_settings", {})
 
     checkpoint_path = CHECKPOINT_FALLBACK
-    if "all_data_retrain" in attrs:
-        checkpoint_path = Path(json.loads(attrs["all_data_retrain"])["best_model_checkpoint_path"])
+    checkpoint_relative_path = model_settings.get("checkpoint_relative_path")
+    if checkpoint_relative_path:
+        checkpoint_path = MODEL_METADATA_PATH.parents[1] / checkpoint_relative_path
 
+    network_defaults = {
+        "h_dim_shared": 88,
+        "h_dim_CS": 80,
+        "num_layers_shared": 1,
+        "num_layers_CS": 2,
+        "active_fn": "tanh",
+        "keep_prob": 0.6925135489809056,
+        "ae_out_dim": 64,
+        "ae_hidden_dim1": 128,
+        "ae_hidden_dim2": 64,
+        "ae_num_heads": 8,
+        "ae_num_layers": 1,
+    }
+    network_payload = model_settings.get("network_settings", {})
     network_settings = {
-        "h_dim_shared": int(params.get("h_dim_shared", 88)),
-        "h_dim_CS": int(params.get("h_dim_cs", 80)),
-        "num_layers_shared": int(params.get("num_layers_shared", 1)),
-        "num_layers_CS": int(params.get("num_layers_cs", 2)),
-        "active_fn": str(params.get("active_fn", "tanh")),
-        "keep_prob": float(params.get("keep_prob", 0.6925135489809056)),
-        "ae_out_dim": int(params.get("ae_out_dim", 64)),
-        "ae_hidden_dim1": int(params.get("ae_hidden_dim1", 128)),
-        "ae_hidden_dim2": int(params.get("ae_out_dim", 64)),
-        "ae_num_heads": int(params.get("ae_num_heads", 8)),
-        "ae_num_layers": int(params.get("ae_num_layers", 1)),
+        key: network_payload.get(key, default)
+        for key, default in network_defaults.items()
     }
 
     return TrialSettings(
         checkpoint_path=Path(checkpoint_path),
-        network_settings=network_settings,
-        bspline_degree=int(json.loads(attrs.get("bspline_degree", "3"))),
-        bspline_internal_knots=list(json.loads(attrs.get("bspline_internal_knots", "[3.0, 9.0]"))),
-        bspline_time_min=0.0,
-        bspline_time_max=float(json.loads(attrs.get("bspline_time_max_months", "15.0"))),
+        network_settings={
+            "h_dim_shared": int(network_settings["h_dim_shared"]),
+            "h_dim_CS": int(network_settings["h_dim_CS"]),
+            "num_layers_shared": int(network_settings["num_layers_shared"]),
+            "num_layers_CS": int(network_settings["num_layers_CS"]),
+            "active_fn": str(network_settings["active_fn"]),
+            "keep_prob": float(network_settings["keep_prob"]),
+            "ae_out_dim": int(network_settings["ae_out_dim"]),
+            "ae_hidden_dim1": int(network_settings["ae_hidden_dim1"]),
+            "ae_hidden_dim2": int(network_settings["ae_hidden_dim2"]),
+            "ae_num_heads": int(network_settings["ae_num_heads"]),
+            "ae_num_layers": int(network_settings["ae_num_layers"]),
+        },
+        bspline_degree=int(model_settings.get("bspline_degree", 3)),
+        bspline_internal_knots=list(model_settings.get("bspline_internal_knots", [3.0, 9.0])),
+        bspline_time_min=float(model_settings.get("bspline_time_min", 0.0)),
+        bspline_time_max=float(model_settings.get("bspline_time_max", 15.0)),
     )
 
 
@@ -211,10 +194,6 @@ class CfDNAPredictionService:
         self.ModelDeepHit_Multitask = ModelDeepHit_Multitask
         self.prepare_input_dims = prepare_input_dims
         self.time_bin_edges_years = np.asarray(TIME_BIN_EDGES_YEARS, dtype=np.float32)
-        self.time_bin_representatives_years = np.asarray(
-            TIME_BIN_REPRESENTATIVES_YEARS,
-            dtype=np.float32,
-        )
         self.display_survival_bins = int(len(self.time_bin_edges_years))
         self.num_category = int(len(TIME_BIN_REPRESENTATIVES_YEARS))
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -326,12 +305,7 @@ class CfDNAPredictionService:
         )
 
     def _load_fev1_scale_metadata(self) -> FEV1Scale | None:
-        if not MODEL_METADATA_PATH.exists():
-            return None
-
-        with MODEL_METADATA_PATH.open("r", encoding="utf-8") as handle:
-            metadata = json.load(handle)
-
+        metadata = _load_model_metadata()
         scale_payload = metadata.get("fev1_scale", {})
         mean = scale_payload.get("mean")
         std = scale_payload.get("std")
@@ -437,8 +411,11 @@ class CfDNAPredictionService:
             raw_series = ordered[column]
             mask = raw_series.notna().to_numpy(dtype=np.float32)
             encoder = self.schema.embedding_codebooks[column]
-            encoded = raw_series.map(lambda value: encoder.get(value, 0)).fillna(0).astype("float32")
-            unknown_count = int(((raw_series.notna()) & (~raw_series.isin(list(encoder.keys())))).sum())
+            canonical_series = raw_series.map(canonicalize_category_value)
+            encoded = canonical_series.map(lambda value: encoder.get(value, 0)).fillna(0).astype("float32")
+            unknown_count = int(
+                ((raw_series.notna()) & (~canonical_series.isin(list(encoder.keys())))).sum()
+            )
             if unknown_count > 0:
                 warnings.append(
                     f"{column}: {unknown_count} unseen category value(s) mapped to missing."
@@ -601,9 +578,15 @@ class CfDNAPredictionService:
                 "BLAD": predictions["BLAD"][0],
             }
         )
-        for bin_index, horizon_years in enumerate(self.time_bin_edges_years[: self.display_survival_bins]):
-            token = f"{float(horizon_years):.2f}".rstrip("0").rstrip(".")
-            summary_df[f"mortality_risk_{token}y"] = predictions["cumulative_risk_display"][0, :, bin_index]
+
+        cumulative_risk = predictions["cumulative_risk_display"][0]
+        for horizon_index, horizon_years in enumerate(
+            self.time_bin_edges_years[: cumulative_risk.shape[1]]
+        ):
+            summary_df[f"mortality_risk_{_format_horizon_suffix(horizon_years)}y"] = cumulative_risk[
+                :, horizon_index
+            ]
+
         return summary_df
 
     def predict_single(
