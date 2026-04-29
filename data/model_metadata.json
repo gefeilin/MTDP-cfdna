@@ -1,26 +1,6 @@
 {
   "trial_number": 506,
   "study_name": "multitask_deephit_v1_4_cfdna_optuna_death_only_v5_maskhead_nosite_nopeakdsa_noweights_noaucddpct-20260418v1",
-  "model_settings": {
-    "checkpoint_relative_path": "results/death_only/optuna_v5_maskhead_nosite_nopeakdsa_noweights_noaucddpct/retrain_checkpoints/death_only/multitask_deephit_v1_4_cfdna_optuna_death_only_v5_maskhead_nosite_nopeakdsa_noweights_noaucddpct-20260418v1_trial506_all_data_retrain_best_model.pt",
-    "network_settings": {
-      "h_dim_shared": 88,
-      "h_dim_CS": 80,
-      "num_layers_shared": 1,
-      "num_layers_CS": 2,
-      "active_fn": "tanh",
-      "keep_prob": 0.6925135489809056,
-      "ae_out_dim": 64,
-      "ae_hidden_dim1": 128,
-      "ae_hidden_dim2": 64,
-      "ae_num_heads": 8,
-      "ae_num_layers": 1
-    },
-    "bspline_degree": 3,
-    "bspline_internal_knots": [3.0, 9.0],
-    "bspline_time_min": 0.0,
-    "bspline_time_max": 15.0
-  },
   "fev1_scale": {
     "mean": 69.73793029785156,
     "std": 20.14320945739746,

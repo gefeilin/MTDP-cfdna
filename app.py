@@ -342,7 +342,7 @@ app.layout = dbc.Container(
                             [
                                 html.Div("Mortality prediction for lung transplant", className="hero-title"),
                                 html.P(
-                                    "Predicting 2-year mortality risk, 1-year FEV1, severe ACR, clinical AMR, and BLAD after lung transplant.",
+                                    "Predicting mortality risk over 5 years, 1-year FEV1 trajectory, 1-year incidence of severe ACR, clinical AMR, and BLAD after lung transplant.",
                                     className="hero-sub",
                                 ),
                             ],
@@ -764,6 +764,7 @@ def render_editor(store, selected_row):
 def apply_edits(_n_clicks, editor_values, editor_ids, selected_row):
     if not editor_ids or not selected_row:
         return no_update
+
     record = {
         item["feature"]: value
         for item, value in zip(editor_ids, editor_values)
