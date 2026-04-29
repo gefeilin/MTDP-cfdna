@@ -17,6 +17,7 @@ from utils.metadata import (
     build_category_dropdown_options,
     build_schema_artifacts,
     coerce_editor_record_for_model,
+    feature_value_to_editor_value,
     load_baseline_frame,
     normalize_editor_record,
 )
@@ -579,6 +580,22 @@ def parse_uploaded_csv(contents: str) -> pd.DataFrame:
     return df
 
 
+def _coerce_user_dataframe_for_model(df: pd.DataFrame) -> pd.DataFrame:
+    schema = build_schema_artifacts()
+    converted_records = []
+    input_columns = list(df.columns)
+
+    for record in df.to_dict("records"):
+        converted_record = dict(record)
+        model_record = coerce_editor_record_for_model(record, schema)
+        for feature_name in schema.feature_names:
+            if feature_name in converted_record:
+                converted_record[feature_name] = model_record[feature_name]
+        converted_records.append(converted_record)
+
+    return pd.DataFrame(converted_records, columns=input_columns)
+
+
 def build_loaded_store(df: pd.DataFrame, source_name: str):
     service = get_prediction_service()
     subject_numbers = (
@@ -586,7 +603,8 @@ def build_loaded_store(df: pd.DataFrame, source_name: str):
         if "SUBJECT_NUMBER" in df.columns
         else None
     )
-    batch = service.prepare_batch(df, subject_numbers=subject_numbers)
+    model_df = _coerce_user_dataframe_for_model(df)
+    batch = service.prepare_batch(model_df, subject_numbers=subject_numbers)
     prediction_df = service.predict_summary(batch)
     known_indices = [
         service.lookup_known_patient_index(subject) for subject in batch.subject_numbers
@@ -620,6 +638,11 @@ def load_example_dataframe() -> pd.DataFrame:
     schema = build_schema_artifacts()
     baseline = load_baseline_frame()
     example = baseline[["SUBJECT_NUMBER", *schema.feature_names]].head(10).copy()
+    for feature_name in schema.feature_names:
+        if feature_name in example.columns:
+            example[feature_name] = example[feature_name].map(
+                lambda value, name=feature_name: feature_value_to_editor_value(name, value)
+            )
     example["SUBJECT_NUMBER"] = [str(index) for index in range(1, len(example) + 1)]
     return example
 
