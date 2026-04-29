@@ -11,6 +11,7 @@ import pandas as pd
 import torch
 
 from .config import (
+    CATEGORY_COLUMNS,
     FEATURE_LABEL_MAP,
     SHAP_BACKGROUND_SIZE,
     SHAP_L1_REG,
@@ -140,9 +141,7 @@ class KernelShapPredictor:
 def _build_background_indices(service, bg_n: int, seed: int = 74) -> np.ndarray:
     cohort = service.schema.cohort_df
     strata_df = pd.DataFrame({"event": cohort["event"].astype(str)})
-    category_columns = (
-        service.schema.passthrough_category_columns + service.schema.embedding_category_columns
-    )
+    category_columns = [column for column in CATEGORY_COLUMNS if column in cohort.columns]
     for column in category_columns:
         strata_df[column] = cohort[column].map(
             lambda value: "MISSING" if pd.isna(value) else str(value)
