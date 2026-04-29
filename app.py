@@ -343,7 +343,7 @@ app.layout = dbc.Container(
                             [
                                 html.Div("Mortality prediction for lung transplant", className="hero-title"),
                                 html.P(
-                                    "Predicting 2-year mortality risk, 1-year FEV1, severe ACR, clinical AMR, and BLAD after lung transplant.",
+                                    "Predicting mortality risk over 5 years, 1-year FEV1 trajectory, 1-year incidence of severe ACR, clinical AMR, and BLAD after lung transplant.",
                                     className="hero-sub",
                                 ),
                             ],
